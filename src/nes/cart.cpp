@@ -219,12 +219,133 @@ private:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 4: MMC3 (TxROM). Eight bank registers selected through $8000 and written through $8001:
+// R0/R1 are 2 KB CHR banks, R2-R5 1 KB CHR banks, R6/R7 8 KB PRG banks. $8000 bit 6 swaps which
+// PRG slot is fixed to the second last bank, bit 7 swaps the CHR halves. $A000 sets mirroring.
+//
+// The scanline counter is clocked by rising edges of PPU A12, which with the usual setup
+// (background at $0000, sprites at $1000) happen once per rendered line at about dot 260. Nes
+// calls hblank() there. When the counter reaches 0 with IRQs enabled, the IRQ line goes low until
+// $E000 acknowledges it.
+
+class MapperMMC3 : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    m_select = 0;
+    for (int i = 0; i < 8; ++i)
+      m_regs[i] = 0;
+    m_regs[0] = 0; m_regs[1] = 2; m_regs[2] = 4; m_regs[3] = 5; m_regs[4] = 6; m_regs[5] = 7;
+    m_regs[6] = 0; m_regs[7] = 1;
+    m_irqLatch = m_irqCounter = 0;
+    m_irqReload = m_irqEnabled = false;
+    m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+    Cart const & c = m_nes.cart();
+    m_fourScreen = c.info.mirroring == Mirroring::FourScreen;
+    m_nes.setMirroring(c.info.mirroring);
+    updatePrg();
+    updateChr();
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    bool odd = addr & 1;
+    switch (addr & 0xe000) {
+      case 0x8000:
+        if (!odd) {
+          m_select = value;
+        } else {
+          m_regs[m_select & 7] = value;
+        }
+        updatePrg();
+        updateChr();
+        break;
+      case 0xa000:
+        // odd: PRG RAM protect, not emulated (the RAM stays enabled and writable)
+        if (!odd && !m_fourScreen)
+          m_nes.setMirroring((value & 1) ? Mirroring::Horizontal : Mirroring::Vertical);
+        break;
+      case 0xc000:
+        if (!odd)
+          m_irqLatch = value;
+        else {
+          m_irqCounter = 0;
+          m_irqReload = true;
+        }
+        break;
+      case 0xe000:
+        if (!odd) {
+          m_irqEnabled = false;
+          m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+        } else {
+          m_irqEnabled = true;
+        }
+        break;
+    }
+  }
+
+  void hblank() override
+  {
+    if (m_irqCounter == 0 || m_irqReload) {
+      m_irqCounter = m_irqLatch;
+      m_irqReload = false;
+    } else {
+      --m_irqCounter;
+    }
+    if (m_irqCounter == 0 && m_irqEnabled)
+      m_nes.cpu.setIrq(Cpu::IRQ_MAPPER);
+  }
+
+private:
+  void updatePrg()
+  {
+    Cart const & c = m_nes.cart();
+    int banks = c.info.prgSize / 0x2000;
+    auto bank = [&](int b) { return c.prg + (b % banks) * 0x2000; };
+    uint8_t const * secondLast = bank(banks - 2);
+    if (m_select & 0x40) {
+      m_nes.mapPrg8K(0, secondLast);
+      m_nes.mapPrg8K(2, bank(m_regs[6]));
+    } else {
+      m_nes.mapPrg8K(0, bank(m_regs[6]));
+      m_nes.mapPrg8K(2, secondLast);
+    }
+    m_nes.mapPrg8K(1, bank(m_regs[7]));
+    m_nes.mapPrg8K(3, bank(banks - 1));
+  }
+
+  void updateChr()
+  {
+    // with bit 7 set the 2 KB banks go to $1000 and the 1 KB banks to $0000
+    int flip = (m_select & 0x80) ? 4 : 0;
+    m_nes.mapChr1K(0 ^ flip, m_regs[0] & 0xfe);
+    m_nes.mapChr1K(1 ^ flip, m_regs[0] | 1);
+    m_nes.mapChr1K(2 ^ flip, m_regs[1] & 0xfe);
+    m_nes.mapChr1K(3 ^ flip, m_regs[1] | 1);
+    m_nes.mapChr1K(4 ^ flip, m_regs[2]);
+    m_nes.mapChr1K(5 ^ flip, m_regs[3]);
+    m_nes.mapChr1K(6 ^ flip, m_regs[4]);
+    m_nes.mapChr1K(7 ^ flip, m_regs[5]);
+  }
+
+  uint8_t m_select;
+  uint8_t m_regs[8];
+  uint8_t m_irqLatch, m_irqCounter;
+  bool    m_irqReload, m_irqEnabled;
+  bool    m_fourScreen;
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
     case 0:  return new MapperNROM(nes);
     case 1:  return new MapperMMC1(nes);
     case 2:  return new MapperUxROM(nes);
+    case 4:  return new MapperMMC3(nes);
     default: return nullptr;
   }
 }
@@ -232,5 +353,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number <= 2;
+  return number <= 2 || number == 4;
 }

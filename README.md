@@ -10,7 +10,7 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
 - **PPU:** scanline renderer with the loopy scroll model, so `$2005`/`$2006` splits work; sprite 0
   hit is timed to the dot, 8 sprites per line, 8x16 sprites, left column clipping, greyscale.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
-- **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM). The cartridge layer works through bank pointer tables, so a
+- **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM), 4 (MMC3, with its scanline IRQ). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the

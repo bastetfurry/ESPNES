@@ -124,6 +124,13 @@ No commercial ROMs are included. Two that can be had legally:
   (plain HTTP only). MMC1 with battery save, so it also exercises CHR RAM drawing and saves. The
   European cartridge published by Imagineer is a different matter and not covered by that release.
 - **nestest** by kevtris, in `testroms/nestest/`: a CPU test with a menu, used by `make -C host test`.
+- **AccuracyCoin** by 100th_Coin (MIT, [github.com/100thCoin/AccuracyCoin](https://github.com/100thCoin/AccuracyCoin)),
+  in `testroms/accuracycoin/`: 146 tests down to single PPU dots and bus cycles. Start on the page
+  index runs them all and shows a table. ESPNES passes 78 of 146 (2026-10-14), with "Misaligned OAM
+  behavior" and "OAM Corruption" on page 19 marked to skip with B (one of them derails the run).
+  The CPU and opcode pages pass; the failures are the dot exact PPU, DMA and APU timing a scanline
+  renderer does not model. For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
+  lists Nintendo's NSO emulator at 97 of 140 on an older version of the suite.
 
 ## Save games
 
@@ -183,7 +190,8 @@ The 512 KB SPIFFS partition is formatted on the first boot and holds the save ga
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
 - `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
   thread like the ESP32 build), sound to WAV (`wav=file.wav`), save RAM in and out (`sram=file`), a trace of PPU register writes per scanline and dot
-  (`trace=FROM-TO` frames), a benchmark
+  (`trace=FROM-TO` frames), RAM bytes at the end or on every change (`ram=`, `watch=`), the
+  nametables as text (`ntdump`), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
 - `roms/` built into the firmware by `tools/embed_roms.py`
 - `testroms/` test ROMs for the host harness (nestest)

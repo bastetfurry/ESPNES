@@ -8,7 +8,10 @@
 //                                         wav writes the sound (22050 Hz mono 16 bit)
 //                                         trace=FROM-TO logs PPU/APU register writes in those frames;
 //                                         sram=file loads the save RAM before and stores it after;
-//                                         oc=PERCENT overclocks the CPU (0-100)
+//                                         oc=PERCENT overclocks the CPU (0-100); ntdump prints both
+//                                         nametables' tile numbers as text at the end; ram=A,B,..
+//                                         prints those CPU RAM bytes (hex addresses) at the end;
+//                                         watch=A,B,.. prints those bytes whenever they change
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -165,6 +168,8 @@ static int run(int argc, char ** argv)
   bool async = false;
   char const * wavPath = nullptr;
   char const * sramPath = nullptr;
+  bool ntdump = false;
+  std::vector<int> peeks, watches;
   std::vector<int16_t> audio;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
@@ -173,6 +178,16 @@ static int run(int argc, char ** argv)
       async = true;
     else if (!strncmp(argv[i], "wav=", 4))
       wavPath = argv[i] + 4;
+    else if (!strncmp(argv[i], "ram=", 4) || !strncmp(argv[i], "watch=", 6)) {
+      auto & list = argv[i][0] == 'r' ? peeks : watches;
+      for (char const * p = strchr(argv[i], '=') + 1; *p; ) {
+        list.push_back(strtol(p, (char **) &p, 16));
+        if (*p == ',')
+          ++p;
+      }
+    }
+    else if (!strcmp(argv[i], "ntdump"))
+      ntdump = true;
     else if (!strncmp(argv[i], "oc=", 3))
       nes.setOverclock(atoi(argv[i] + 3));
     else if (!strncmp(argv[i], "sram=", 5))
@@ -215,6 +230,19 @@ static int run(int argc, char ** argv)
         b |= h.buttons;
     nes.setButtons(0, b);
     nes.runFrame(true);
+    if (!watches.empty()) {
+      static std::vector<int> last;
+      std::vector<int> now;
+      for (int a : watches)
+        now.push_back(nes.read(a));
+      if (now != last) {
+        printf("frame %5d:", f);
+        for (size_t k = 0; k < watches.size(); ++k)
+          printf(" $%04X=$%02X", watches[k], now[k]);
+        printf("\n");
+        last = now;
+      }
+    }
     audio.insert(audio.end(), nes.apu.samples(), nes.apu.samples() + nes.apu.sampleCount());
     nes.apu.takeSamples();
     if (nes.cpu.jammed) {
@@ -242,6 +270,21 @@ static int run(int argc, char ** argv)
     }
   fclose(f);
   printf("%d frames, PC=$%04X\n", frames, nes.cpu.PC);
+  for (int a : peeks)
+    printf("$%04X = $%02X (%d)\n", a, nes.read(a), nes.read(a));
+  if (ntdump) {
+    // tiles as characters, assuming the game's font sits at its ASCII codes (most test ROMs)
+    for (int nt = 0; nt < 2; ++nt) {
+      printf("--- nametable %d\n", nt);
+      for (int row = 0; row < 30; ++row) {
+        for (int col = 0; col < 32; ++col) {
+          uint8_t t = nes.ppu.vram[nt * 0x400 + row * 32 + col];
+          putchar(t >= 0x20 && t < 0x7f ? t : '.');
+        }
+        putchar('\n');
+      }
+    }
+  }
   return 0;
 }
 

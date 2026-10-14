@@ -55,6 +55,7 @@ public:
 private:
 
   void interrupt(uint16_t vector, bool brk);
+  void runCold(uint8_t op, int32_t until);
 
   Nes *    m_nes;
   int32_t  m_nmiEdge;

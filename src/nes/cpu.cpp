@@ -75,8 +75,20 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 // Dummy reads have side effects only on I/O registers ($2000-$401F: $2002 clears vblank, $2007
 // advances the address, $4015 and $4016 too), so they are only made there and cost nothing
 // for RAM and ROM.
+// The accesses themselves are out of line (and in flash): inlined, the memory access code at every
+// dummy access made the core 8 KB bigger, too much for the IRAM.
 #define IS_IO(addr)  ((uint16_t)((addr) - 0x2000) < 0x2020)
-#define DUMMY_READ(addr) { uint16_t d_ = (addr); if (NES_UNLIKELY(IS_IO(d_))) RD(d_); }
+#define DUMMY_READ(addr) { uint16_t d_ = (addr); if (NES_UNLIKELY(IS_IO(d_))) ioDummyRead(nes, d_); }
+
+static void __attribute__((noinline, cold)) ioDummyRead(Nes & nes, uint16_t addr)
+{
+  nes.read(addr);
+}
+
+static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t addr, uint8_t value)
+{
+  nes.write(addr, value);
+}
 
 #define AM_IMM   uint16_t a = PC++;
 #define AM_ZP    uint16_t a = RD(PC++);
@@ -130,7 +142,7 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 
 #define READ(op, mode, OP)    case op: { mode OP(RD(a)); break; }
 #define STORE(op, mode, val)  case op: { mode WR(a, val); break; }
-#define RMW(op, mode, OP)     case op: { mode uint8_t m = RD(a); if (NES_UNLIKELY(IS_IO(a))) WR(a, m); \
+#define RMW(op, mode, OP)     case op: { mode uint8_t m = RD(a); if (NES_UNLIKELY(IS_IO(a))) ioDummyWrite(nes, a, m); \
                                          OP(m); WR(a, m); break; }
 
 // the eight addressing modes of the ALU group (ORA AND EOR ADC STA LDA CMP SBC)
@@ -206,21 +218,16 @@ NES_HOT void Cpu::run(int32_t until, bool single)
       ALU_READ(0xa0, OP_LDA)
       ALU_READ(0xc0, OP_CMPA)
       ALU_READ(0xe0, OP_SBC)
-      READ(0xeb, AM_IMM, OP_SBC)        // unofficial duplicate of E9
 
       STORE(0x81, AM_IZX, A)  STORE(0x85, AM_ZP, A)   STORE(0x8d, AM_ABS, A)  STORE(0x91, AM_IZY, A)
       STORE(0x95, AM_ZPX, A)  STORE(0x99, AM_ABSY, A) STORE(0x9d, AM_ABSX, A)
       STORE(0x86, AM_ZP, X)   STORE(0x8e, AM_ABS, X)  STORE(0x96, AM_ZPY, X)
       STORE(0x84, AM_ZP, Y)   STORE(0x8c, AM_ABS, Y)  STORE(0x94, AM_ZPX, Y)
-      STORE(0x83, AM_IZX, A & X) STORE(0x87, AM_ZP, A & X) STORE(0x8f, AM_ABS, A & X) STORE(0x97, AM_ZPY, A & X)
 
       READ(0xa2, AM_IMM, OP_LDX) READ(0xa6, AM_ZP, OP_LDX) READ(0xae, AM_ABS, OP_LDX)
       READ(0xb6, AM_ZPY, OP_LDX) READ(0xbe, AM_ABSYP, OP_LDX)
       READ(0xa0, AM_IMM, OP_LDY) READ(0xa4, AM_ZP, OP_LDY) READ(0xac, AM_ABS, OP_LDY)
       READ(0xb4, AM_ZPX, OP_LDY) READ(0xbc, AM_ABSXP, OP_LDY)
-      READ(0xa3, AM_IZX, OP_LAX) READ(0xa7, AM_ZP, OP_LAX) READ(0xaf, AM_ABS, OP_LAX)
-      READ(0xb3, AM_IZYP, OP_LAX) READ(0xb7, AM_ZPY, OP_LAX) READ(0xbf, AM_ABSYP, OP_LAX)
-      READ(0xab, AM_IMM, OP_LAX)
 
       READ(0xe0, AM_IMM, OP_CMPX) READ(0xe4, AM_ZP, OP_CMPX) READ(0xec, AM_ABS, OP_CMPX)
       READ(0xc0, AM_IMM, OP_CMPY) READ(0xc4, AM_ZP, OP_CMPY) READ(0xcc, AM_ABS, OP_CMPY)
@@ -237,12 +244,6 @@ NES_HOT void Cpu::run(int32_t until, bool single)
       case 0x4a: OP_LSR(A); break;
       case 0x6a: OP_ROR(A); break;
 
-      COMBO_RMW(0x00, OP_SLO)
-      COMBO_RMW(0x20, OP_RLA)
-      COMBO_RMW(0x40, OP_SRE)
-      COMBO_RMW(0x60, OP_RRA)
-      COMBO_RMW(0xc0, OP_DCP)
-      COMBO_RMW(0xe0, OP_ISB)
 
       BRANCH(0x10, !(n & 0x80))
       BRANCH(0x30, n & 0x80)
@@ -313,13 +314,46 @@ NES_HOT void Cpu::run(int32_t until, bool single)
       case 0x80: case 0x82: case 0x89: case 0xc2: case 0xe2:
         PC += 1;
         break;
+
+      // everything else (unofficial opcodes, rare in games) runs from flash, see runCold()
+      default:
+        runCold(op, until);
+        break;
+    }
+    if (NES_UNLIKELY(nmiPending)) {
+      if (nmiPending == NMI_EDGE)       // this instruction's last cycle was cycles - 1
+        nmiPending = cycles - 1 <= m_nmiEdge ? NMI_AFTER_THIS : NMI_NOW;
+      else
+        nmiPending = nmiPending == NMI_AFTER_NEXT ? NMI_AFTER_THIS : NMI_NOW;
+    }
+    if (single)
+      break;
+  }
+}
+
+// The unofficial opcodes: games hardly use them, so they live in flash, keeping the hot switch in
+// run() small enough for the IRAM (the combined read-modify-write ones alone are 42 cases).
+void Cpu::runCold(uint8_t op, int32_t until)
+{
+  Nes & nes = *m_nes;
+  switch (op) {
+      READ(0xeb, AM_IMM, OP_SBC)        // unofficial duplicate of E9
+      STORE(0x83, AM_IZX, A & X) STORE(0x87, AM_ZP, A & X) STORE(0x8f, AM_ABS, A & X) STORE(0x97, AM_ZPY, A & X)
+      READ(0xa3, AM_IZX, OP_LAX) READ(0xa7, AM_ZP, OP_LAX) READ(0xaf, AM_ABS, OP_LAX)
+      READ(0xb3, AM_IZYP, OP_LAX) READ(0xb7, AM_ZPY, OP_LAX) READ(0xbf, AM_ABSYP, OP_LAX)
+      READ(0xab, AM_IMM, OP_LAX)
+      COMBO_RMW(0x00, OP_SLO)
+      COMBO_RMW(0x20, OP_RLA)
+      COMBO_RMW(0x40, OP_SRE)
+      COMBO_RMW(0x60, OP_RRA)
+      COMBO_RMW(0xc0, OP_DCP)
+      COMBO_RMW(0xe0, OP_ISB)
       READ(0x04, AM_ZP, OP_NOP)  READ(0x44, AM_ZP, OP_NOP)  READ(0x64, AM_ZP, OP_NOP)
       READ(0x14, AM_ZPX, OP_NOP) READ(0x34, AM_ZPX, OP_NOP) READ(0x54, AM_ZPX, OP_NOP)
       READ(0x74, AM_ZPX, OP_NOP) READ(0xd4, AM_ZPX, OP_NOP) READ(0xf4, AM_ZPX, OP_NOP)
       READ(0x0c, AM_ABS, OP_NOP)
       READ(0x1c, AM_ABSXP, OP_NOP) READ(0x3c, AM_ABSXP, OP_NOP) READ(0x5c, AM_ABSXP, OP_NOP)
       READ(0x7c, AM_ABSXP, OP_NOP) READ(0xdc, AM_ABSXP, OP_NOP) READ(0xfc, AM_ABSXP, OP_NOP)
-
       // unofficial immediates
       case 0x0b: case 0x2b: { AM_IMM OP_AND(RD(a)); C = A >> 7; break; }          // ANC
       case 0x4b: { AM_IMM OP_AND(RD(a)); OP_LSR(A); break; }                      // ALR
@@ -344,14 +378,5 @@ NES_HOT void Cpu::run(int32_t until, bool single)
         jammed = true;
         cycles = until;
         break;
-    }
-    if (NES_UNLIKELY(nmiPending)) {
-      if (nmiPending == NMI_EDGE)       // this instruction's last cycle was cycles - 1
-        nmiPending = cycles - 1 <= m_nmiEdge ? NMI_AFTER_THIS : NMI_NOW;
-      else
-        nmiPending = nmiPending == NMI_AFTER_NEXT ? NMI_AFTER_THIS : NMI_NOW;
-    }
-    if (single)
-      break;
   }
 }

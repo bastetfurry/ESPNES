@@ -110,6 +110,16 @@ nothing is written to flash at runtime. Changing the games means rebuilding and 
 Reading PRG from flash through the cache costs nothing measurable (SMB: 8.7 ms per frame either
 way). The firmware partition is 3.4 MB, so about 2.7 MB of ROMs fit next to the code.
 
+## ROMs to try
+
+No commercial ROMs are included. Two that can be had legally:
+
+- **Elite**: Ian Bell, one of its two authors, offers the never-published US (NTSC) version as a
+  free download on [his NES Elite page](http://www.iancgbell.clara.net/elite/nes/index.htm)
+  (plain HTTP only). MMC1 with battery save, so it also exercises CHR RAM drawing and saves. The
+  European cartridge published by Imagineer is a different matter and not covered by that release.
+- **nestest** by kevtris, in `testroms/nestest/`: a CPU test with a menu, used by `make -C host test`.
+
 ## Save games
 
 Games with a battery (the header's battery flag) keep their 8 KB of save RAM in the 512 KB SPIFFS

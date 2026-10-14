@@ -32,6 +32,7 @@ public:
   struct LineState {
     uint16_t  v;
     uint8_t   x, ctrl, mask;
+    uint8_t   evalStart;            // OAM address sprite evaluation starts at
     uint8_t   palette[32];
     uint8_t * chrMap[8];
     uint8_t * ntMap[4];
@@ -48,7 +49,10 @@ public:
   // order. Touches no PPU state, so it may run on another core.
   void drawLine(LineState const & s, int y, uint8_t * out, uint8_t const * colorMap, bool vgaOrder) const;
 
-  // dot 256-257 of a rendered line: fine Y increment and horizontal copy from t
+  // dot 65 of a line: sprite evaluation for the next line starts at the current OAM address
+  void latchEvalStart();
+
+  // dot 256-257 of a rendered line: fine Y increment and horizontal copy from t, OAMADDR to 0
   void endOfLine();
   // dots 280-304 of the pre-render line: vertical copy from t
   void copyVertical();
@@ -82,6 +86,7 @@ private:
   uint8_t  m_ctrl, m_mask, m_status, m_oamAddr;
   uint16_t m_v, m_t;                // loopy registers
   uint8_t  m_x;                     // fine X
+  uint8_t  m_evalStart;             // OAMADDR at dot 65 of the line before
   bool     m_w;                     // write toggle
   uint8_t  m_readBuffer;
   uint8_t  m_openBus;

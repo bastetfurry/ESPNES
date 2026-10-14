@@ -42,6 +42,7 @@ void Ppu::reset()
   m_w = false;
   m_readBuffer = 0;
   m_openBus = 0;
+  m_evalStart = 0;
   spr0HitCycle = INT32_MAX;
   memset(vram, 0, sizeof(vram));
   memset(oam, 0xff, sizeof(oam));
@@ -197,6 +198,8 @@ NES_HOT void Ppu::endOfLine()
 {
   if (!renderingEnabled())
     return;
+  // dots 257-320 fetch the next line's sprites, and leave OAMADDR at 0
+  m_oamAddr = 0;
   // fine Y increment, carrying into coarse Y and the vertical nametable bit
   if ((m_v & 0x7000) != 0x7000) {
     m_v += 0x1000;
@@ -239,12 +242,60 @@ static inline uint16_t spritePatternAddr(uint8_t ctrl, uint8_t tile, uint8_t att
 }
 
 
+// Sprite evaluation for line y, as the PPU does it during the line before: walks OAM from the
+// address in OAMADDR at dot 65 ('start', normally 0) and collects up to 8 objects in range of the
+// line as copies of their 4 bytes. Like the hardware:
+//   - an object in range is copied byte by byte, so the address goes up by 4 from wherever it was
+//   - one out of range moves the address by 4 and masks it with $FC, which re-aligns a misaligned
+//     address
+//   - with 8 found, the overflow search adds 5 instead (the famous hardware bug: the byte index
+//     within the object is incremented along with the object, without carrying)
+//   - evaluation ends when the address passes 255
+// *spr0 tells whether the first object evaluated is among them: that one is "sprite 0" for the
+// hit, whichever OAM slot it is in. Returns the number of objects found.
+static int evaluateSprites(uint8_t const * oam, int start, int y, int height,
+                           uint8_t found[8][4], bool * spr0, bool * overflow)
+{
+  int count = 0;
+  *spr0 = *overflow = false;
+  for (int a = start; a < 256; ) {
+    bool inRange = (unsigned)(y - 1 - oam[a]) < (unsigned) height;
+    if (count < 8) {
+      if (inRange) {
+        for (int k = 0; k < 4; ++k)
+          found[count][k] = oam[(a + k) & 0xff];
+        if (a == start)
+          *spr0 = true;
+        ++count;
+        a += 4;
+      } else {
+        a = (a + 4) & 0x1fc;
+      }
+    } else {
+      if (inRange) {
+        *overflow = true;
+        break;
+      }
+      a = ((a & ~3) + 4) | ((a + 1) & 3);
+    }
+  }
+  return count;
+}
+
+
+void Ppu::latchEvalStart()
+{
+  m_evalStart = m_oamAddr;
+}
+
+
 void Ppu::captureLine(LineState & s) const
 {
   s.v    = m_v;
   s.x    = m_x;
   s.ctrl = m_ctrl;
   s.mask = m_mask;
+  s.evalStart = m_evalStart;
   memcpy(s.palette, palette, sizeof(palette));
   memcpy(s.chrMap, chrMap, sizeof(chrMap));
   memcpy(s.ntMap, ntMap, sizeof(ntMap));
@@ -272,26 +323,24 @@ inline bool Ppu::bgOpaqueAt(int x) const
 
 NES_HOT int Ppu::evaluateLine(int y)
 {
-  if (!(m_mask & 0x10))
+  // evaluation runs whenever rendering is on, background or sprites
+  if (!(m_mask & 0x18))
     return -1;
 
   int height = (m_ctrl & 0x20) ? 16 : 8;
-  int count = 0;
-  for (int i = 0; i < 64; ++i) {
-    if ((unsigned)(y - 1 - oam[i * 4]) < (unsigned)height) {
-      if (++count > 8) {
-        m_status |= 0x20;       // overflow (without the hardware's evaluation bug)
-        break;
-      }
-    }
-  }
+  uint8_t found[8][4];
+  bool spr0, overflow;
+  evaluateSprites(oam, m_evalStart, y, height, found, &spr0, &overflow);
+  if (overflow)
+    m_status |= 0x20;
 
-  // sprite 0 hit: needs sprite 0 on this line and the background on
-  unsigned row = (unsigned)(y - 1 - oam[0]);
-  if (row >= (unsigned)height || !(m_mask & 0x08))
+  // sprite 0 hit: needs "sprite 0" (the first object evaluated) on this line, and both the
+  // background and the sprites on
+  if (!spr0 || (m_mask & 0x18) != 0x18)
     return -1;
-  uint8_t tile = oam[1], attr = oam[2];
-  int sx = oam[3];
+  unsigned row = (unsigned)(y - 1 - found[0][0]);
+  uint8_t tile = found[0][1], attr = found[0][2];
+  int sx = found[0][3];
   uint16_t pa = spritePatternAddr(m_ctrl, tile, attr, row);
   uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
   uint8_t bits = chr[0] | chr[8];
@@ -384,13 +433,12 @@ void Ppu::drawLine(LineState const & st, int y, uint8_t * out, uint8_t const * c
   int minX = (st.mask & 0x04) ? 0 : 8;
   int xorX = vgaOrder ? 2 : 0;
   uint32_t taken[8] = { 0 };
-  int count = 0;
-  for (int i = 0; i < 64 && count < 8; ++i) {
-    uint8_t const * s = oam + i * 4;
+  uint8_t found[8][4];
+  bool spr0, overflow;
+  int count = evaluateSprites(oam, st.evalStart, y, height, found, &spr0, &overflow);
+  for (int k = 0; k < count; ++k) {
+    uint8_t const * s = found[k];
     int row = y - 1 - s[0];
-    if ((unsigned) row >= (unsigned) height)
-      continue;
-    ++count;
     uint8_t attr = s[2];
     int sx = s[3];
     uint16_t pa = spritePatternAddr(st.ctrl, s[1], attr, row);

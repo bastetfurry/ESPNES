@@ -9,6 +9,8 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
   nestest's automated mode cycle for cycle (`make -C host test`).
 - **PPU:** scanline renderer with the loopy scroll model, so `$2005`/`$2006` splits work; sprite 0
   hit is timed to the dot, 8 sprites per line, 8x16 sprites, left column clipping, greyscale.
+  Sprite evaluation follows the hardware byte by byte: it starts at OAMADDR (which rendering
+  resets to 0 every line), re-aligns a misaligned address, and has the overflow flag bug.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
 - **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM), 4 (MMC3, with its scanline IRQ). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
@@ -126,10 +128,10 @@ No commercial ROMs are included. Two that can be had legally:
 - **nestest** by kevtris, in `testroms/nestest/`: a CPU test with a menu, used by `make -C host test`.
 - **AccuracyCoin** by 100th_Coin (MIT, [github.com/100thCoin/AccuracyCoin](https://github.com/100thCoin/AccuracyCoin)),
   in `testroms/accuracycoin/`: 146 tests down to single PPU dots and bus cycles. Start on the page
-  index runs them all and shows a table. ESPNES passes 78 of 146 (2026-10-14), with "Misaligned OAM
-  behavior" and "OAM Corruption" on page 19 marked to skip with B (one of them derails the run).
+  index runs them all and shows a table. ESPNES passes 82 of 146 (2026-10-14), nothing skipped.
   The CPU and opcode pages pass; the failures are the dot exact PPU, DMA and APU timing a scanline
-  renderer does not model. For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
+  renderer does not model. (Test 1 of "Misaligned OAM behavior" must pass: its failure path pops
+  the test's own return address, which derails the whole run on any emulator that fails it.) For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
   lists Nintendo's NSO emulator at 97 of 140 on an older version of the suite.
 
 ## Save games

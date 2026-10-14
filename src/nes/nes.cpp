@@ -267,6 +267,8 @@ NES_HOT void Nes::runFrame(bool draw)
     // the flag rises about two dots after the pixel goes out
     if (hitX >= 0 && ppu.spr0HitCycle == INT32_MAX)
       ppu.spr0HitCycle = cycleAt(y, hitX + 2);
+    cpu.run(cycleAt(y, 65));
+    ppu.latchEvalStart();
     cpu.run(cycleAt(y, 256));
     ppu.endOfLine();
     if (ppu.renderingEnabled())
@@ -312,6 +314,8 @@ NES_HOT void Nes::runFrame(bool draw)
   // pre-render line: the last of the frame
   cpu.run(cycleAt(pre, 1));
   ppu.startFrame();
+  cpu.run(cycleAt(pre, 65));
+  ppu.latchEvalStart();
   cpu.run(cycleAt(pre, 256));
   ppu.endOfLine();
   ppu.copyVertical();

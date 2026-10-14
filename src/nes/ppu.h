@@ -74,10 +74,17 @@ public:
 
   // CPU cycle (frame relative) at which the pending sprite 0 hit becomes visible
   int32_t   spr0HitCycle;
+  // cpu.cycles of an instruction whose $2002 read races the vblank flag being set (see Nes)
+  int32_t   vblRaceCycle;
+  int32_t   nmiEdgeCycle;           // CPU cycle of the vblank NMI edge
+  int32_t   vblSetUnits;            // the dot the vblank flag rises at (Nes::unitsAt)
+  int32_t   nmiClearCycle;          // CPU cycle from which the NMI input sees vblank over
 
 private:
 
   bool     bgOpaqueAt(int x) const;
+  void     incrementY();
+  void     incrementAfter2007();
   uint8_t  vramRead(uint16_t addr);
   void     vramWrite(uint16_t addr, uint8_t value);
 
@@ -90,4 +97,7 @@ private:
   bool     m_w;                     // write toggle
   uint8_t  m_readBuffer;
   uint8_t  m_openBus;
+  uint32_t m_openBusFrame;          // frame of the latch's last refresh, for its decay
+  bool     m_vblSuppressed;         // a $2002 read raced the vblank flag: it stays clear
+  int32_t  m_vblCycle;              // CPU cycle of this frame's vblank edge
 };

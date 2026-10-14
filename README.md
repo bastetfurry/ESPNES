@@ -128,7 +128,7 @@ No commercial ROMs are included. Two that can be had legally:
 - **nestest** by kevtris, in `testroms/nestest/`: a CPU test with a menu, used by `make -C host test`.
 - **AccuracyCoin** by 100th_Coin (MIT, [github.com/100thCoin/AccuracyCoin](https://github.com/100thCoin/AccuracyCoin)),
   in `testroms/accuracycoin/`: 146 tests down to single PPU dots and bus cycles. Start on the page
-  index runs them all and shows a table. ESPNES passes 82 of 146 (2026-10-14), nothing skipped.
+  index runs them all and shows a table. ESPNES passes 98 of 146 (2026-10-14), nothing skipped.
   The CPU and opcode pages pass; the failures are the dot exact PPU, DMA and APU timing a scanline
   renderer does not model. (Test 1 of "Misaligned OAM behavior" must pass: its failure path pops
   the test's own return address, which derails the whole run on any emulator that fails it.) For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)

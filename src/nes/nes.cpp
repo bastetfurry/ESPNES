@@ -103,6 +103,7 @@ void Nes::powerOn()
   apu.reset(m_region);
   m_mapper->reset();
   m_baseUnits = 0;
+  m_parityBase = 0;
   cpu.cycles  = 0;
   frameCount  = 0;
   cpu.reset();
@@ -153,9 +154,15 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
     return prgRam[addr & 0x1fff];
 
   switch (addr) {
-    case 0x4015:
+    case 0x4015: {
       apu.run(cpu.cycles);
-      return apu.readStatus();
+      uint8_t r = apu.readStatus();
+#ifdef NES_TRACE
+      if (nesTraceRead)
+        nesTraceRead(*this, addr, r);
+#endif
+      return r;
+    }
     case 0x4016:
     case 0x4017: {
       int port = addr & 1;
@@ -173,6 +180,7 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
 
 #ifdef NES_TRACE
 void (*nesTraceWrite)(Nes & nes, uint16_t addr, uint8_t value);
+void (*nesTraceRead)(Nes & nes, uint16_t addr, uint8_t value);
 #endif
 
 NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
@@ -207,7 +215,9 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
         page[i] = read(src + i);
       ppu.oamDma(page);
     }
-    cpu.cycles += 513 + (cpu.cycles & 1);
+    // a halt cycle, one more if needed so the reads land on "get" (even) cycles, then 256
+    // get/put pairs: the CPU always resumes on a get cycle
+    cpu.cycles += 513 + (isGetCycle(cpu.cycles) ? 1 : 0);
     return;
   }
 
@@ -294,7 +304,13 @@ NES_HOT void Nes::runFrame(bool draw)
 
   // vblank starts at (what would be) line 241, dot 1
   int vbl = 241 + extra;
-  cpu.run(cycleAt(vbl, 1));
+  // a $2002 read in the very CPU cycle the flag would be set reads 0 and suppresses the flag
+  // and the NMI for this frame; that is the read of an instruction ending on this cycle count
+  ppu.vblRaceCycle = cycleAt(vbl, 1);
+  ppu.vblSetUnits = unitsAt(vbl, 1);
+  // the CPU's NMI input sees the edge a dot before $2002 does (measured with AccuracyCoin)
+  ppu.nmiEdgeCycle = cycleAt(vbl, 0);
+  cpu.run(ppu.vblRaceCycle);
   if (async) {
     uint32_t t0 = nesClock();
     while (m_linesDrawn.load(std::memory_order_acquire) < 240)
@@ -311,7 +327,9 @@ NES_HOT void Nes::runFrame(bool draw)
     apu.run(cpu.cycles);
   }
 
-  // pre-render line: the last of the frame
+  // pre-render line: the last of the frame. As at the start of vblank, the NMI input sees the
+  // flag drop a dot before $2002 does.
+  ppu.nmiClearCycle = cycleAt(pre, 0);
   cpu.run(cycleAt(pre, 1));
   ppu.startFrame();
   cpu.run(cycleAt(pre, 65));
@@ -323,11 +341,14 @@ NES_HOT void Nes::runFrame(bool draw)
     m_mapper->hblank();
   cpu.run(cycleAt(lines, 0));
   apu.run(cpu.cycles);
+  ppu.nmiClearCycle = INT32_MAX;
+  ppu.nmiEdgeCycle = INT32_MIN;
 
   // rebase the cycle counter to the start of the next frame
   int32_t frameUnits = lines * UNITS_PER_LINE;
   int32_t c = (frameUnits - m_baseUnits) / m_unitsPerCycle;
   cpu.cycles -= c;
+  m_parityBase ^= c & 1;
   apu.rebase(c);
   ++frameCount;
   m_baseUnits += c * m_unitsPerCycle - frameUnits;

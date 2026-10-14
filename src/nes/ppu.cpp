@@ -43,7 +43,14 @@ void Ppu::reset()
   m_readBuffer = 0;
   m_openBus = 0;
   m_evalStart = 0;
+  m_openBusFrame = 0;
   spr0HitCycle = INT32_MAX;
+  vblRaceCycle = INT32_MIN;
+  m_vblCycle = INT32_MIN;
+  nmiEdgeCycle = INT32_MIN;
+  nmiClearCycle = INT32_MAX;
+  vblSetUnits = 0;
+  m_vblSuppressed = false;
   memset(vram, 0, sizeof(vram));
   memset(oam, 0xff, sizeof(oam));
   // a typical power on palette; the real one is semi random
@@ -60,6 +67,25 @@ static inline int paletteIndex(uint16_t addr)
   int i = addr & 0x1f;
   // $3F10/$3F14/$3F18/$3F1C mirror $3F00/$3F04/$3F08/$3F0C
   return (i & 0x13) == 0x10 ? i & 0x0f : i;
+}
+
+
+// After a $2007 access: normally +1 or +32, but while the PPU renders (a visible or the pre-render
+// line, rendering on) the access glitches into its coarse X and Y increments at once.
+void Ppu::incrementAfter2007()
+{
+  if (renderingEnabled()) {
+    int line = m_nes->currentLine(nullptr);
+    if (line < 240 || line >= m_nes->linesPerFrame() - 1) {
+      if ((m_v & 0x1f) == 0x1f)
+        m_v = (m_v & ~0x1f) ^ 0x0400;
+      else
+        ++m_v;
+      incrementY();
+      return;
+    }
+  }
+  m_v = (m_v + ((m_ctrl & 0x04) ? 32 : 1)) & 0x7fff;
 }
 
 
@@ -90,19 +116,34 @@ NES_HOT void Ppu::vramWrite(uint16_t addr, uint8_t value)
 
 NES_HOT uint8_t Ppu::readRegister(uint16_t addr)
 {
+  // the PPU's I/O latch is a capacitance: unrefreshed for about half a second, it reads 0
+  if (m_nes->frameCount - m_openBusFrame > 30)
+    m_openBus = 0;
   switch (addr & 7) {
     case 2: {
       if (spr0HitCycle <= m_nes->cpu.cycles)
         m_status |= 0x40;
+      if (NES_UNLIKELY(m_nes->cpu.cycles == vblRaceCycle))
+        m_vblSuppressed = true;
+      else if (NES_UNLIKELY(m_nes->cpu.cycles == m_vblCycle + 1) &&
+               m_nes->unitsOfCycle(m_nes->cpu.cycles - 1) - vblSetUnits <= 5)
+        m_nes->cpu.cancelNmi();          // read on the dot after the flag rose: NMI suppressed too
       uint8_t r = (m_status & 0xe0) | (m_openBus & 0x1f);
       m_status &= ~0x80;
       m_w = false;
       m_openBus = r;
+      m_openBusFrame = m_nes->frameCount;
       return r;
     }
-    case 4:
-      m_openBus = oam[m_oamAddr];
+    case 4: {
+      int dot, line = m_nes->currentLine(&dot);
+      if (renderingEnabled() && line < 240 && ((dot >= 1 && dot <= 64) || (dot >= 257 && dot <= 320)))
+        m_openBus = 0xff;
+      else
+        m_openBus = oam[m_oamAddr];
+      m_openBusFrame = m_nes->frameCount;
       return m_openBus;
+    }
     case 7: {
       uint16_t a = m_v & 0x3fff;
       uint8_t r;
@@ -111,11 +152,12 @@ NES_HOT uint8_t Ppu::readRegister(uint16_t addr)
         m_readBuffer = vramRead(a);
       } else {
         // palette reads are immediate; the buffer gets the nametable byte "under" the palette
-        r = (vramRead(a) & 0x3f) | (m_openBus & 0xc0);
+        r = (vramRead(a) & ((m_mask & 0x01) ? 0x30 : 0x3f)) | (m_openBus & 0xc0);
         m_readBuffer = vramRead(a - 0x1000);
       }
-      m_v = (m_v + ((m_ctrl & 0x04) ? 32 : 1)) & 0x7fff;
+      incrementAfter2007();
       m_openBus = r;
+      m_openBusFrame = m_nes->frameCount;
       return r;
     }
     default:
@@ -127,14 +169,19 @@ NES_HOT uint8_t Ppu::readRegister(uint16_t addr)
 NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
 {
   m_openBus = value;
+  m_openBusFrame = m_nes->frameCount;
   switch (addr & 7) {
     case 0: {
       bool wasEnabled = m_ctrl & 0x80;
+      // the NMI line is "vblank AND enabled": turned off within a cycle of the edge, the CPU's
+      // edge detector never sees it
+      if (wasEnabled && !(value & 0x80) && m_nes->cpu.cycles <= nmiEdgeCycle + 1)
+        m_nes->cpu.cancelNmi();
       m_ctrl = value;
       m_t = (m_t & 0xf3ff) | ((value & 3) << 10);
       // enabling NMI while the vblank flag is still set fires one straight away
-      if (!wasEnabled && (value & 0x80) && (m_status & 0x80))
-        m_nes->cpu.nmi();
+      if (!wasEnabled && (value & 0x80) && (m_status & 0x80) && m_nes->cpu.cycles <= nmiClearCycle)
+        m_nes->cpu.nmiDelayed();
       break;
     }
     case 1:
@@ -144,7 +191,13 @@ NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
       m_oamAddr = value;
       break;
     case 4:
-      oam[m_oamAddr++] = value;
+      if (renderingEnabled() && m_nes->currentLine(nullptr) < 240) {
+        m_oamAddr = (m_oamAddr + 4) & 0xfc;
+      } else {
+        // the attribute byte has no bits 2-4
+        oam[m_oamAddr] = (m_oamAddr & 3) == 2 ? value & 0xe3 : value;
+        ++m_oamAddr;
+      }
       break;
     case 5:
       if (!m_w) {
@@ -166,7 +219,7 @@ NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
       break;
     case 7:
       vramWrite(m_v, value);
-      m_v = (m_v + ((m_ctrl & 0x04) ? 32 : 1)) & 0x7fff;
+      incrementAfter2007();
       break;
   }
 }
@@ -174,16 +227,24 @@ NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
 
 void Ppu::oamDma(uint8_t const * page)
 {
-  for (int i = 0; i < 256; ++i)
-    oam[(uint8_t)(m_oamAddr + i)] = page[i];
+  for (int i = 0; i < 256; ++i) {
+    uint8_t a = m_oamAddr + i;
+    oam[a] = (a & 3) == 2 ? page[i] & 0xe3 : page[i];   // the attribute byte has no bits 2-4
+  }
 }
 
 
 void Ppu::setVBlank()
 {
+  m_vblCycle = vblRaceCycle;
+  vblRaceCycle = INT32_MIN;
+  if (m_vblSuppressed) {
+    m_vblSuppressed = false;
+    return;
+  }
   m_status |= 0x80;
   if (m_ctrl & 0x80)
-    m_nes->cpu.nmi();
+    m_nes->cpu.nmiAtCycle(nmiEdgeCycle);
 }
 
 
@@ -200,7 +261,15 @@ NES_HOT void Ppu::endOfLine()
     return;
   // dots 257-320 fetch the next line's sprites, and leave OAMADDR at 0
   m_oamAddr = 0;
-  // fine Y increment, carrying into coarse Y and the vertical nametable bit
+  incrementY();
+  // horizontal position from t
+  m_v = (m_v & ~0x041f) | (m_t & 0x041f);
+}
+
+
+// fine Y increment, carrying into coarse Y and the vertical nametable bit
+inline void Ppu::incrementY()
+{
   if ((m_v & 0x7000) != 0x7000) {
     m_v += 0x1000;
   } else {
@@ -216,8 +285,6 @@ NES_HOT void Ppu::endOfLine()
     }
     m_v = (m_v & ~0x03e0) | (y << 5);
   }
-  // horizontal position from t
-  m_v = (m_v & ~0x041f) | (m_t & 0x041f);
 }
 
 

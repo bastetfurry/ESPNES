@@ -13,6 +13,8 @@
 class Nes;
 // host debugging: called for every write to $2000-$401F (built with -DNES_TRACE only)
 extern void (*nesTraceWrite)(Nes & nes, uint16_t addr, uint8_t value);
+// host debugging: called for reads of $4015 (built with -DNES_TRACE only)
+extern void (*nesTraceRead)(Nes & nes, uint16_t addr, uint8_t value);
 #endif
 
 // controller bits, in the order the shift register reports them
@@ -36,6 +38,7 @@ public:
   void   setRegion(Region region);
   Region region() const                       { return m_region; }
   int    frameRate() const                    { return m_region == Region::PAL ? 50 : 60; }
+  int    linesPerFrame() const                { return m_linesPerFrame + m_extraLines; }
 
   // Overclocking: gives the CPU 'percent' more cycles per frame (up to MAX_OVERCLOCK), as extra
   // lines before vblank in which the PPU idles and the APU is frozen. Helps games that slow down.
@@ -70,6 +73,10 @@ public:
   uint32_t   profWait;                  // runFrame waiting for the drawing to finish
   uint32_t   profDraw;                  // drawQueuedLines busy drawing (not waiting for lines)
 
+  // frame relative position of a CPU cycle's start in fifths of a PPU dot (line * 1705 + dot * 5)
+  int32_t unitsOfCycle(int32_t cycle) const   { return cycle * m_unitsPerCycle + m_baseUnits; }
+  static int32_t unitsAt(int line, int dot)   { return line * UNITS_PER_LINE + dot * 5; }
+
   // PPU position of the CPU's current cycle (for tracing)
   int currentLine(int * dot) const
   {
@@ -79,6 +86,10 @@ public:
     return units / UNITS_PER_LINE;
   }
   uint32_t frameCount;
+
+  // CPU cycles alternate between "get" (even) and "put" (odd) for the APU and the DMA units;
+  // cpu.cycles is frame relative, so the absolute parity needs m_parityBase
+  bool isGetCycle(int32_t cycle) const        { return !((cycle ^ m_parityBase) & 1); }
 
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }
@@ -125,6 +136,7 @@ private:
   int        m_overclock = 0;      // percent
   int        m_extraLines = 0;
   int32_t    m_baseUnits;        // position of CPU cycle 0 relative to the frame start, <= 0
+  uint8_t    m_parityBase = 0;   // flips with every frame of an odd number of cycles
 
   uint8_t    m_buttons[2];
   uint8_t    m_shift[2];

@@ -6,7 +6,8 @@
 //                                         a string of A B s(elect) S(tart) U D L R; async draws
 //                                         on a second thread, as the ESP32 build does on core 0;
 //                                         wav writes the sound (22050 Hz mono 16 bit)
-//                                         trace=FROM-TO logs PPU/APU register writes in those frames;
+//                                         trace=FROM-TO logs PPU register writes (and $4015 reads) in
+//                                         those frames, traceapu adds the APU register writes;
 //                                         sram=file loads the save RAM before and stores it after;
 //                                         oc=PERCENT overclocks the CPU (0-100); ntdump prints both
 //                                         nametables' tile numbers as text at the end; ram=A,B,..
@@ -115,12 +116,22 @@ static void writeWav(char const * path, std::vector<int16_t> const & samples, in
 
 static int s_traceFrom = -1, s_traceTo = -1;
 
+static bool s_traceApu = false;
+
+static void traceRead(Nes & nes, uint16_t addr, uint8_t value)
+{
+  if ((int) nes.frameCount < s_traceFrom || (int) nes.frameCount > s_traceTo)
+    return;
+  int dot, line = nes.currentLine(&dot);
+  printf("frame %4u line %3d dot %3d  read $%04X -> $%02X  (cycle %d)\n", nes.frameCount, line, dot, addr, value, nes.cpu.cycles);
+}
+
 static void traceWrite(Nes & nes, uint16_t addr, uint8_t value)
 {
   if ((int) nes.frameCount < s_traceFrom || (int) nes.frameCount > s_traceTo)
     return;
-  if (addr >= 0x4000 && addr != 0x4014)
-    return;   // the PPU and OAM DMA only, for now
+  if (addr >= 0x4000 && addr != 0x4014 && !s_traceApu)
+    return;   // the PPU and OAM DMA only, unless traceapu
   int dot, line = nes.currentLine(&dot);
   printf("frame %4u line %3d dot %3d  $%04X = $%02X\n", nes.frameCount, line, dot,
          addr < 0x4000 ? 0x2000 | (addr & 7) : addr, value);
@@ -195,7 +206,10 @@ static int run(int argc, char ** argv)
     else if (!strncmp(argv[i], "trace=", 6)) {
       sscanf(argv[i] + 6, "%d-%d", &s_traceFrom, &s_traceTo);
       nesTraceWrite = traceWrite;
+      nesTraceRead = traceRead;
     }
+    else if (!strcmp(argv[i], "traceapu"))
+      s_traceApu = true;
     else if (!strncmp(argv[i], "hold=", 5)) {
       Hold h;
       h.buttons = parseButtons(argv[i] + 5);

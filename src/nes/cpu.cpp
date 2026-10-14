@@ -31,7 +31,7 @@ void Cpu::reset()
   S = 0xfd;
   n = 0; z = 1; C = V = D = 0;
   I = 1;
-  nmiPending = false;
+  nmiPending = 0;
   irqLines   = 0;
   jammed     = false;
   PC = m_nes->read(0xfffc) | (m_nes->read(0xfffd) << 8);
@@ -72,20 +72,29 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 #define WR(addr, v)  nes.write(addr, v)
 #define FETCH16()    (RD(PC) | (RD((uint16_t)(PC + 1)) << 8))
 
+// Dummy reads have side effects only on I/O registers ($2000-$401F: $2002 clears vblank, $2007
+// advances the address, $4015 and $4016 too), so they are only made there and cost nothing
+// for RAM and ROM.
+#define IS_IO(addr)  ((uint16_t)((addr) - 0x2000) < 0x2020)
+#define DUMMY_READ(addr) { uint16_t d_ = (addr); if (NES_UNLIKELY(IS_IO(d_))) RD(d_); }
+
 #define AM_IMM   uint16_t a = PC++;
 #define AM_ZP    uint16_t a = RD(PC++);
 #define AM_ZPX   uint16_t a = (uint8_t)(RD(PC++) + X);
 #define AM_ZPY   uint16_t a = (uint8_t)(RD(PC++) + Y);
 #define AM_ABS   uint16_t a = FETCH16(); PC += 2;
-#define AM_ABSX  uint16_t a = FETCH16() + X; PC += 2;
-#define AM_ABSY  uint16_t a = FETCH16() + Y; PC += 2;
+#define AM_ABSX  uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + X; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
+#define AM_ABSY  uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + Y; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
 // read forms: one more cycle when indexing crosses a page
-#define AM_ABSXP uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + X; cycles += ((a ^ b) >> 8) & 1; }
-#define AM_ABSYP uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + Y; cycles += ((a ^ b) >> 8) & 1; }
+#define AM_ABSXP uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + X; \
+                               if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
+#define AM_ABSYP uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + Y; \
+                               if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
 #define AM_IZX   uint16_t a; { uint8_t zp = RD(PC++) + X; a = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); }
-#define AM_IZY   uint16_t a; { uint8_t zp = RD(PC++); a = (nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8)) + Y; }
+#define AM_IZY   uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); \
+                               a = b + Y; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
 #define AM_IZYP  uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); \
-                               a = b + Y; cycles += ((a ^ b) >> 8) & 1; }
+                               a = b + Y; if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
 
 // operations on a value m
 #define NZ(v)      { n = z = (v); }
@@ -121,7 +130,8 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 
 #define READ(op, mode, OP)    case op: { mode OP(RD(a)); break; }
 #define STORE(op, mode, val)  case op: { mode WR(a, val); break; }
-#define RMW(op, mode, OP)     case op: { mode uint8_t m = RD(a); OP(m); WR(a, m); break; }
+#define RMW(op, mode, OP)     case op: { mode uint8_t m = RD(a); if (NES_UNLIKELY(IS_IO(a))) WR(a, m); \
+                                         OP(m); WR(a, m); break; }
 
 // the eight addressing modes of the ALU group (ORA AND EOR ADC STA LDA CMP SBC)
 #define ALU_READ(base, OP)  READ(base + 0x01, AM_IZX, OP)  READ(base + 0x05, AM_ZP, OP) \
@@ -139,8 +149,13 @@ void Cpu::interrupt(uint16_t vector, bool brk)
                             RMW(base + 0x17, AM_ZPX, OP) RMW(base + 0x1b, AM_ABSY, OP) \
                             RMW(base + 0x1f, AM_ABSX, OP)
 
+// a taken branch dummy reads the next byte, and on a page crossing the address before the
+// high byte is fixed (only made on I/O, like the other dummy reads)
 #define BRANCH(op, cond)  case op: { int8_t off = RD(PC++); if (cond) { uint16_t t = PC + off; \
-                                     cycles += 1 + (((t ^ PC) >> 8) & 1); PC = t; } break; }
+                                     DUMMY_READ(PC); \
+                                     if ((t ^ PC) & 0xff00) { cycles += 2; DUMMY_READ((PC & 0xff00) | (t & 0xff)); } \
+                                     else ++cycles; \
+                                     PC = t; } break; }
 
 #define PUSH(v)  nes.ram[0x100 | S--] = (v)
 #define POP()    nes.ram[0x100 | ++S]
@@ -156,10 +171,10 @@ NES_HOT void Cpu::run(int32_t until, bool single)
   // a line from frame to frame, depending on how the instructions happened to line up.
   for (;;) {
 
-    if (NES_UNLIKELY(nmiPending)) {
+    if (NES_UNLIKELY(nmiPending == NMI_NOW)) {
       if (!single && cycles + 7 > until)
         break;
-      nmiPending = false;
+      nmiPending = 0;
       interrupt(0xfffa, false);
       cycles += 7;
       if (single)
@@ -292,19 +307,16 @@ NES_HOT void Cpu::run(int32_t until, bool single)
       case 0xc8: ++Y; NZ(Y); break;
       case 0x88: --Y; NZ(Y); break;
 
-      // NOPs, official and unofficial (the reads matter only for I/O side effects; skipped)
+      // NOPs, official and unofficial; the ones with an operand do read it (which matters on I/O)
       case 0xea: case 0x1a: case 0x3a: case 0x5a: case 0x7a: case 0xda: case 0xfa:
         break;
       case 0x80: case 0x82: case 0x89: case 0xc2: case 0xe2:
-      case 0x04: case 0x44: case 0x64:
         PC += 1;
         break;
-      case 0x14: case 0x34: case 0x54: case 0x74: case 0xd4: case 0xf4:
-        PC += 1;
-        break;
-      case 0x0c:
-        PC += 2;
-        break;
+      READ(0x04, AM_ZP, OP_NOP)  READ(0x44, AM_ZP, OP_NOP)  READ(0x64, AM_ZP, OP_NOP)
+      READ(0x14, AM_ZPX, OP_NOP) READ(0x34, AM_ZPX, OP_NOP) READ(0x54, AM_ZPX, OP_NOP)
+      READ(0x74, AM_ZPX, OP_NOP) READ(0xd4, AM_ZPX, OP_NOP) READ(0xf4, AM_ZPX, OP_NOP)
+      READ(0x0c, AM_ABS, OP_NOP)
       READ(0x1c, AM_ABSXP, OP_NOP) READ(0x3c, AM_ABSXP, OP_NOP) READ(0x5c, AM_ABSXP, OP_NOP)
       READ(0x7c, AM_ABSXP, OP_NOP) READ(0xdc, AM_ABSXP, OP_NOP) READ(0xfc, AM_ABSXP, OP_NOP)
 
@@ -332,6 +344,12 @@ NES_HOT void Cpu::run(int32_t until, bool single)
         jammed = true;
         cycles = until;
         break;
+    }
+    if (NES_UNLIKELY(nmiPending)) {
+      if (nmiPending == NMI_EDGE)       // this instruction's last cycle was cycles - 1
+        nmiPending = cycles - 1 <= m_nmiEdge ? NMI_AFTER_THIS : NMI_NOW;
+      else
+        nmiPending = nmiPending == NMI_AFTER_NEXT ? NMI_AFTER_THIS : NMI_NOW;
     }
     if (single)
       break;

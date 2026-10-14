@@ -217,6 +217,7 @@ void Apu::reset(Region region)
   m_dmc.startLength = 1;
 
   m_cycle = 0;
+  m_parity = 0;
   m_accCycles = 0;
   m_fiveStep = m_irqInhibit = m_frameIrq = false;
   m_seqCycle = 0;
@@ -364,6 +365,7 @@ NES_HOT void Apu::run(int32_t until)
 
 void Apu::rebase(int32_t cycles)
 {
+  m_parity ^= cycles & 1;       // keeps (m_cycle ^ m_parity) & 1 the absolute cycle parity
   m_cycle -= cycles;
   m_nextSample -= (int64_t) cycles << 16;
 }
@@ -489,7 +491,10 @@ void Apu::write(uint16_t addr, uint8_t v)
       }
       m_seqPositions = m_fiveStep ? (m_region == Region::PAL ? s_seq5PAL : s_seq5NTSC)
                                   : (m_region == Region::PAL ? s_seq4PAL : s_seq4NTSC);
-      m_seqCycle = 0;
+      // The sequencer restarts 3 CPU cycles after a write on a "put" cycle, 4 after one on a
+      // "get" cycle (gets are the even cycles). The write was in cycle m_cycle - 1, and
+      // m_seqCycle counts from m_cycle.
+      m_seqCycle = ((uint32_t)(m_cycle - 1) ^ m_parity) & 1 ? -3 : -4;
       m_seqStep = 0;
       if (m_fiveStep) {
         quarterFrame();

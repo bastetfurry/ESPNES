@@ -23,7 +23,15 @@ public:
   // Runs exactly one instruction (or interrupt entry).
   void step()                     { run(cycles, true); }
 
-  void nmi()                      { nmiPending = true; }
+  void nmi()                      { nmiPending = NMI_NOW; }
+  // An NMI enabled by a register write is polled before the write cycle, so it is taken only
+  // after the instruction following the write.
+  void nmiDelayed()               { if (!nmiPending) nmiPending = NMI_AFTER_NEXT; }
+  // The NMI edge at 'cycle', from outside the instruction stream: the CPU polls interrupts
+  // before an instruction's last cycle, so the first instruction to end after the edge takes it
+  // right after itself, unless the edge fell into its last cycle; then one instruction later.
+  void nmiAtCycle(int32_t cycle)  { nmiPending = NMI_EDGE; m_nmiEdge = cycle; }
+  void cancelNmi()                { nmiPending = 0; }
   void setIrq(uint8_t source)     { irqLines |= source; }
   void clearIrq(uint8_t source)   { irqLines &= ~source; }
 
@@ -37,7 +45,10 @@ public:
   // CPU cycles, relative to the start of the current frame (Nes::runFrame rebases it)
   int32_t  cycles;
 
-  bool     nmiPending;
+  // NMI_AFTER_NEXT turns into NMI_AFTER_THIS at the end of the instruction that set it, which
+  // turns into NMI_NOW at the end of the next one
+  enum : uint8_t { NMI_NOW = 1, NMI_AFTER_THIS = 2, NMI_AFTER_NEXT = 3, NMI_EDGE = 4 };
+  uint8_t  nmiPending;
   uint8_t  irqLines;
   bool     jammed;                // hit a KIL opcode
 
@@ -46,6 +57,7 @@ private:
   void interrupt(uint16_t vector, bool brk);
 
   Nes *    m_nes;
+  int32_t  m_nmiEdge;
 
   // flags: N is bit 7 of n, Z is set when z == 0, the others are 0/1
   uint8_t  n, z, C, V, I, D;

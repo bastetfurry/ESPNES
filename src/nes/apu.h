@@ -127,6 +127,7 @@ private:
   Dmc      m_dmc;
 
   int32_t  m_cycle;              // frame relative CPU cycle the APU has reached
+  uint8_t  m_parity;             // makes (m_cycle ^ m_parity) & 1 the absolute cycle parity
   int32_t  m_accCycles;          // cycles accumulated into the current sample
 
   // frame counter

@@ -146,25 +146,40 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 #define POP()    nes.ram[0x100 | ++S]
 
 
-NES_HOT void Cpu::run(int32_t until)
+NES_HOT void Cpu::run(int32_t until, bool single)
 {
   Nes & nes = *m_nes;
 
-  while (cycles < until) {
+  // An instruction runs only if it ends by 'until': the 6502 accesses memory in its last cycle,
+  // so a store that would land after the PPU event the caller is heading for (dot 256, say)
+  // must happen after it, not before. Deciding by the start instead made SMB3's status bar jump
+  // a line from frame to frame, depending on how the instructions happened to line up.
+  for (;;) {
 
     if (NES_UNLIKELY(nmiPending)) {
+      if (!single && cycles + 7 > until)
+        break;
       nmiPending = false;
       interrupt(0xfffa, false);
       cycles += 7;
+      if (single)
+        break;
       continue;
     }
     if (NES_UNLIKELY(irqLines) && !I) {
+      if (!single && cycles + 7 > until)
+        break;
       interrupt(0xfffe, false);
       cycles += 7;
+      if (single)
+        break;
       continue;
     }
 
-    uint8_t op = RD(PC++);
+    uint8_t op = RD(PC);
+    if (!single && cycles + s_cycles[op] > until)
+      break;
+    ++PC;
     cycles += s_cycles[op];
 
     switch (op) {
@@ -318,5 +333,7 @@ NES_HOT void Cpu::run(int32_t until)
         cycles = until;
         break;
     }
+    if (single)
+      break;
   }
 }

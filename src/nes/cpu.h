@@ -15,11 +15,13 @@ public:
   void init(Nes * nes) { m_nes = nes; }
   void reset();
 
-  // Runs instructions until 'cycles' reaches 'until'. The last instruction may overshoot.
-  void run(int32_t until);
+  // Runs the instructions that end by 'until' (a few cycles more with page crossings or taken
+  // branches), so 'cycles' stops at most one instruction short of it. With single, runs exactly
+  // one instruction (or interrupt entry) regardless.
+  void run(int32_t until, bool single = false);
 
   // Runs exactly one instruction (or interrupt entry).
-  void step()                     { run(cycles + 1); }
+  void step()                     { run(cycles, true); }
 
   void nmi()                      { nmiPending = true; }
   void setIrq(uint8_t source)     { irqLines |= source; }

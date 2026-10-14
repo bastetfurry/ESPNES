@@ -14,7 +14,8 @@
 # the ROMs in place: no RAM, no copying, no flash writes. Files are only rewritten when they
 # change, so an unchanged set does not trigger a rebuild.
 #
-# Pictures: a PNG is scaled to fit 64x64 and dithered to the NES palette (tools/nesimage.py).
+# Pictures: a PNG is scaled to fit 64x64 in NES palette colours (tools/nesimage.py): pixel art
+# keeps its own colours, photos are dithered.
 # A missing picture is a warning; the menu then shows an empty square.
 #
 # Manuals: teletext style pages of 32x25 characters with phpBB style tags, converted to a cut-down
@@ -147,19 +148,20 @@ def picture(game):
         warn("%s: picture %s not found, the menu shows an empty square" % (game["file"], game["picture"]))
         return None
     cache = os.path.join(picDir, game["picture"] + ".bin")
-    if os.path.exists(cache) and os.path.getmtime(cache) >= max(os.path.getmtime(png), os.path.getmtime(paletteH)):
+    sources = [png, paletteH, os.path.join(project, "tools", "nesimage.py")]
+    if os.path.exists(cache) and os.path.getmtime(cache) >= max(os.path.getmtime(f) for f in sources):
         with open(cache, "rb") as f:
             return f.read()
     try:
         if palette is None:
             palette = nesimage.load_palette(paletteH)
-        data = nesimage.convert(png, palette)
+        data, used = nesimage.convert(png, palette)
     except Exception as e:
         warn("%s: cannot convert %s (%s), the menu shows an empty square" % (game["file"], game["picture"], e))
         return None
     with open(cache, "wb") as f:
         f.write(data)
-    print("embed_roms: converted %s" % game["picture"])
+    print("embed_roms: converted %s (as %s)" % (game["picture"], used))
     return data
 
 

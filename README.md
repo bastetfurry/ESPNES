@@ -80,8 +80,13 @@ File name, name shown in the menu, picture, manual, options (see "Per game setti
 the CSV does not list is still built in, at the end under its file name, with a warning; a
 malformed line (a missing quote, say) is reported and skipped.
 
-The picture is a PNG in `roms/`, scaled to fit 64x64 (aspect kept, black bars) and dithered to the
-NES palette by `tools/nesimage.py` (plain Python, no Pillow needed). Converted pictures are cached in
+The picture is a PNG in `roms/`, scaled to fit 64x64 (aspect kept, black bars) in NES palette
+colours by `tools/nesimage.py` (plain Python, no Pillow needed). Screenshots and other pixel art
+(up to 1024 colours) keep their own colours: each 64x64 pixel takes the colour of its source block
+closest to the block's average, without dithering, so flat areas stay flat and edges crisp.
+Photos and box art are averaged and Floyd-Steinberg dithered. Text smaller than about 16 pixels
+does not survive the scaling; a picture cropped to the logo works better than a full title
+screen. Converted pictures are cached in
 `src/generated/pics/`. A missing picture is a build warning and an empty square in the menu.
 `python3 tools/nesimage.py picture.png preview.ppm` shows what a picture will look like.
 

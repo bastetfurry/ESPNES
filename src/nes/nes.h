@@ -37,6 +37,13 @@ public:
   Region region() const                       { return m_region; }
   int    frameRate() const                    { return m_region == Region::PAL ? 50 : 60; }
 
+  // Overclocking: gives the CPU 'percent' more cycles per frame (up to MAX_OVERCLOCK), as extra
+  // lines before vblank in which the PPU idles and the APU is frozen. Helps games that slow down.
+  // On the ESP32 each extra line costs ~23 us: 100% takes PAL to ~17.5 of its 20 ms per frame.
+  static constexpr int MAX_OVERCLOCK = 100;
+  void   setOverclock(int percent);
+  int    overclock() const                    { return m_overclock; }
+
   // Emulates one frame. With draw = false the picture is not produced (frame skipping).
   void runFrame(bool draw);
 
@@ -115,6 +122,8 @@ private:
   Region     m_region;
   int        m_unitsPerCycle;
   int        m_linesPerFrame;
+  int        m_overclock = 0;      // percent
+  int        m_extraLines = 0;
   int32_t    m_baseUnits;        // position of CPU cycle 0 relative to the frame start, <= 0
 
   uint8_t    m_buttons[2];

@@ -82,6 +82,14 @@ void Nes::setRegion(Region region)
   m_region        = region;
   m_unitsPerCycle = region == Region::PAL ? 16 : 15;
   m_linesPerFrame = region == Region::PAL ? 312 : 262;
+  m_extraLines    = m_linesPerFrame * m_overclock / 100;
+}
+
+
+void Nes::setOverclock(int percent)
+{
+  m_overclock  = percent < 0 ? 0 : percent > MAX_OVERCLOCK ? MAX_OVERCLOCK : percent;
+  m_extraLines = m_linesPerFrame * m_overclock / 100;
 }
 
 
@@ -266,8 +274,25 @@ NES_HOT void Nes::runFrame(bool draw)
     apu.run(cpu.cycles);
   }
 
-  // line 240 is idle, vblank starts at line 241 dot 1
-  cpu.run(cycleAt(241, 1));
+  // line 240 is idle
+  cpu.run(cycleAt(241, 0));
+  apu.run(cpu.cycles);
+
+  // Overclocking: extra lines here, before vblank, in which only the CPU runs. The picture's
+  // timing and the vblank length stay as they are; the APU is frozen so the music keeps its
+  // tempo (register writes still take effect).
+  int extra = m_extraLines;
+  if (extra) {
+    apu.setFrozen(true);
+    for (int k = 1; k <= extra; ++k)
+      cpu.run(cycleAt(241 + k, 0));
+    apu.run(cpu.cycles);
+    apu.setFrozen(false);
+  }
+
+  // vblank starts at (what would be) line 241, dot 1
+  int vbl = 241 + extra;
+  cpu.run(cycleAt(vbl, 1));
   if (async) {
     uint32_t t0 = nesClock();
     while (m_linesDrawn.load(std::memory_order_acquire) < 240)
@@ -277,8 +302,9 @@ NES_HOT void Nes::runFrame(bool draw)
   ppu.setVBlank();
 
   // vblank, a line at a time so the APU (frame IRQ, DMC) keeps up
-  int pre = m_linesPerFrame - 1;
-  for (int y = 242; y <= pre; ++y) {
+  int lines = m_linesPerFrame + extra;
+  int pre = lines - 1;
+  for (int y = vbl + 1; y <= pre; ++y) {
     cpu.run(cycleAt(y, 0));
     apu.run(cpu.cycles);
   }
@@ -291,11 +317,11 @@ NES_HOT void Nes::runFrame(bool draw)
   ppu.copyVertical();
   if (ppu.renderingEnabled())
     m_mapper->hblank();
-  cpu.run(cycleAt(m_linesPerFrame, 0));
+  cpu.run(cycleAt(lines, 0));
   apu.run(cpu.cycles);
 
   // rebase the cycle counter to the start of the next frame
-  int32_t frameUnits = m_linesPerFrame * UNITS_PER_LINE;
+  int32_t frameUnits = lines * UNITS_PER_LINE;
   int32_t c = (frameUnits - m_baseUnits) / m_unitsPerCycle;
   cpu.cycles -= c;
   apu.rebase(c);

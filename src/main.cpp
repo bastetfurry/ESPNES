@@ -415,13 +415,16 @@ static int chooseRom(char const * message)
 ///////////////////////////////////////////////////////////////////////////////
 // running a game
 
-// Settings from a ROM's optional .cfg (built in next to it, see tools/embed_roms.py):
-//   save   = yes | no      battery backed save RAM, overriding the header's battery flag
-//   region = ntsc | pal    TV system, overriding the header and the file name
+// Per game settings, from the options column of roms/settings.csv and an optional <rom>.cfg
+// (merged by tools/embed_roms.py):
+//   save      = yes | no      battery backed save RAM, overriding the header's battery flag
+//   region    = ntsc | pal    TV system, overriding the header and the file name
+//   overclock = 0 - 100       percent more CPU time per frame, for games that slow down
 // One "key = value" per line; '#' starts a comment.
 struct RomConfig {
-  int save   = -1;          // -1 = from the header
-  int region = -1;          // -1 = automatic, else (int) Region
+  int save      = -1;       // -1 = from the header
+  int region    = -1;       // -1 = automatic, else (int) Region
+  int overclock = 0;
 };
 
 static RomConfig parseConfig(char const * text)
@@ -450,6 +453,8 @@ static RomConfig parseConfig(char const * text)
       cfg.save = yes;
     else if (key == "region" && (value == "ntsc" || value == "pal"))
       cfg.region = (int)(value == "pal" ? Region::PAL : Region::NTSC);
+    else if (key == "overclock" && value.length() && isdigit((unsigned char) value[0]))
+      cfg.overclock = std::min((long) Nes::MAX_OVERCLOCK, value.toInt());
     else
       Serial.printf("config: ignoring \"%s\"\n", line.c_str());
   }
@@ -562,12 +567,13 @@ static char const * loadRom(RomBlob const & rom)
   if (battery)
     loadSave();
 
+  nes.setOverclock(cfg.overclock);
   nes.powerOn();
-  Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, free heap %u\n",
+  Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
                 nes.cart().info.chrSize / 1024, nes.cart().info.chrSize ? "" : " (RAM)",
                 nes.region() == Region::PAL ? "PAL" : "NTSC", battery ? ", battery save" : "",
-                (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
+                nes.overclock(), (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
   return nullptr;
 }
 

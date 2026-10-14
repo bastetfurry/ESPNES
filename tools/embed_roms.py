@@ -2,7 +2,8 @@
 #
 # roms/settings.csv lists the games in menu order, one per line:
 #   "file name.nes", "name shown in the menu", "picture.png", "manual.txt", options
-# Lines starting with # are comments. The options are not used yet. A ROM in roms/
+# Lines starting with # are comments. Options are "key=value" pairs separated by ';' (see
+# RomConfig in src/main.cpp: save, region, overclock). A ROM in roms/
 # that the CSV does not list is still built in, after the listed ones, named after its file.
 #
 # Writes into src/generated/:
@@ -20,8 +21,8 @@
 # VT100 form for the device by tools/nesmanual.py (the format is described there). A missing
 # manual is a warning; the menu then has none to show.
 #
-# An optional "<rom name>.cfg" next to a ROM (same name, .cfg instead of .nes) is built in as its
-# config text (save = yes/no, region = ntsc/pal).
+# An optional "<rom name>.cfg" next to a ROM (same name, .cfg instead of .nes) holds the same
+# settings, one "key = value" per line; it is merged after the CSV's options.
 
 import csv
 import os
@@ -198,11 +199,14 @@ for i, g in enumerate(games):
         else:
             warn("%s: manual %s not found" % (g["file"], g["manual"]))
 
+    # settings: the CSV's options column ("key=value;key=value") and an optional <rom>.cfg,
+    # merged into one "key = value" per line text; the .cfg comes last and so wins
+    settings = "\n".join(part.strip() for part in g["options"].split(";") if part.strip())
     cfgPath = os.path.join(romDir, g["file"][:-4] + ".cfg")
-    cfg = "nullptr"
     if os.path.exists(cfgPath):
         with open(cfgPath, encoding="utf-8", errors="replace") as f:
-            cfg = cString(f.read())
+            settings += "\n" + f.read()
+    cfg = cString(settings) if settings.strip() else "nullptr"
 
     entries.append("  { %s, %s, nesrom_%d, %d, %s, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, manualRef, cfg))
 

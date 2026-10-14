@@ -25,6 +25,9 @@ public:
   void setSampleRate(int rate, float adjust = 1.0f);
 
   void    run(int32_t cycle);
+
+  // Frozen, run() lets time pass without the APU advancing (overclocking's extra CPU cycles)
+  void    setFrozen(bool value)    { m_frozen = value; }
   void    write(uint16_t addr, uint8_t value);
   uint8_t readStatus();
 
@@ -116,6 +119,7 @@ private:
 
   Nes *    m_nes;
   Region   m_region;
+  bool     m_frozen = false;
 
   Pulse    m_pulse[2];
   Triangle m_tri;

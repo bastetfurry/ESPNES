@@ -7,7 +7,8 @@
 //                                         on a second thread, as the ESP32 build does on core 0;
 //                                         wav writes the sound (22050 Hz mono 16 bit)
 //                                         trace=FROM-TO logs PPU/APU register writes in those frames;
-//                                         sram=file loads the save RAM before and stores it after
+//                                         sram=file loads the save RAM before and stores it after;
+//                                         oc=PERCENT overclocks the CPU (0-100)
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -172,6 +173,8 @@ static int run(int argc, char ** argv)
       async = true;
     else if (!strncmp(argv[i], "wav=", 4))
       wavPath = argv[i] + 4;
+    else if (!strncmp(argv[i], "oc=", 3))
+      nes.setOverclock(atoi(argv[i] + 3));
     else if (!strncmp(argv[i], "sram=", 5))
       sramPath = argv[i] + 5;
     else if (!strncmp(argv[i], "trace=", 6)) {

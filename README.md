@@ -76,7 +76,7 @@ build and generates `src/generated/` (an `.incbin` per ROM and the index the ROM
 "Legend of Zelda, The (Europe).nes","The Legend of Zelda","zelda1.png","zelda1.txt"
 ```
 
-File name, name shown in the menu, picture, manual, options (not used yet). A ROM
+File name, name shown in the menu, picture, manual, options (see "Per game settings"). A ROM
 the CSV does not list is still built in, at the end under its file name, with a warning; a
 malformed line (a missing quote, say) is reported and skipped.
 
@@ -133,16 +133,35 @@ changes every session and gets written on every return to the list.
 
 ## Per game settings
 
-An optional `Game.cfg` next to `Game.nes` in `roms/` is built in with it:
+Settings per game go into the options column of `settings.csv` or into an optional `Game.cfg`
+next to `Game.nes` in `roms/`, which is built in with it:
 
 ```
 # yes/no: battery save RAM, overriding the header (some games use the RAM without a battery)
 save = no
 # ntsc/pal: TV system, overriding the header and the "(Europe)"-style name tags
 region = pal
+# 0-100: percent more CPU time per frame, see below
+overclock = 50
 ```
 
+The same settings can go into the options column of `settings.csv`, separated by `;`:
+`"Elite (Europe) (En,Fr,De).nes","Elite","elite.png","elite.txt","overclock=100"`. A `.cfg`
+wins over the CSV where both set something.
+
 The TV choice in the ROM list (Left/Right), when not Auto, overrides both.
+
+### Overclocking
+
+`overclock=N` (0-100) gives the CPU N percent more cycles per frame, for games that slow down when
+busy (Kirby, Elite, shooters). As in Mesen, the extra time is inserted as lines between the
+picture and vblank in which only the CPU runs: the picture's timing and the vblank length stay
+untouched, and the APU is frozen during them, so the music keeps its tempo. A game that waits
+for vblank in a loop just waits longer, so it rarely breaks anything.
+
+Each extra line costs about 23 us on the ESP32: PAL games at 100% use about 17.5 of their 20 ms
+per frame. NTSC frames are shorter (16.6 ms), so heavy NTSC games may start skipping frames near
+100%; the serial statistics show how close a game gets.
 
 ## Build & flash
 

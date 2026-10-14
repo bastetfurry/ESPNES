@@ -12,7 +12,7 @@ struct RomBlob {
   size_t          size;
   uint8_t const * picture;    // PICTURE_SIZE x PICTURE_SIZE NES colour numbers, or nullptr
   char const *    manual;     // pages, or nullptr (format below)
-  char const *    config;     // contents of the optional <name>.cfg next to it, or nullptr
+  char const *    config;     // settings, "key = value" per line (CSV options + <name>.cfg), or nullptr
 };
 
 static constexpr int PICTURE_SIZE = 64;

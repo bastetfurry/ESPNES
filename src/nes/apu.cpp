@@ -334,6 +334,14 @@ NES_HOT void Apu::emitSample()
 
 NES_HOT void Apu::run(int32_t until)
 {
+  if (NES_UNLIKELY(m_frozen)) {
+    // skip the time: the sample clock and the frame counter (relative to m_cycle) move with it
+    if (until > m_cycle) {
+      m_nextSample += (int64_t)(until - m_cycle) << 16;
+      m_cycle = until;
+    }
+    return;
+  }
   while (m_cycle < until) {
     int32_t sampleAt = (int32_t)(m_nextSample >> 16);
     int32_t seqAt    = m_cycle + (m_seqPositions[m_seqStep] - m_seqCycle);

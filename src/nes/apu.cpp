@@ -145,8 +145,9 @@ void Apu::dmcFetch()
   Dmc & d = m_dmc;
   if (d.bufferFull || !d.remaining)
     return;
-  // the DMA steals CPU cycles on hardware; not emulated
-  d.buffer = m_nes->read(d.addr);
+  // the DMA halts the CPU for 4 cycles, 3 if it starts on a "get" cycle; Nes adds them
+  m_dmaStall += m_nes->isGetCycle(m_cycle) ? 3 : 4;
+  d.buffer = m_nes->bus = m_nes->read(d.addr);     // the fetched byte is left on the data bus
   d.bufferFull = true;
   d.addr = d.addr == 0xffff ? 0x8000 : d.addr + 1;
   if (--d.remaining == 0) {
@@ -218,6 +219,8 @@ void Apu::reset(Region region)
 
   m_cycle = 0;
   m_parity = 0;
+  m_dmaStall = 0;
+  m_loadPending = false;
   m_accCycles = 0;
   m_fiveStep = m_irqInhibit = m_frameIrq = false;
   m_seqCycle = 0;
@@ -335,6 +338,11 @@ NES_HOT void Apu::emitSample()
 
 NES_HOT void Apu::run(int32_t until)
 {
+  if (NES_UNLIKELY(m_loadPending) && !m_frozen && until >= m_loadAt) {
+    m_loadPending = false;
+    run(m_loadAt);
+    dmcFetch();
+  }
   if (NES_UNLIKELY(m_frozen)) {
     // skip the time: the sample clock and the frame counter (relative to m_cycle) move with it
     if (until > m_cycle) {
@@ -363,8 +371,24 @@ NES_HOT void Apu::run(int32_t until)
 }
 
 
+int32_t Apu::nextDmaCycle() const
+{
+  Dmc const & d = m_dmc;
+  if (m_frozen)
+    return INT32_MAX;
+  if (m_loadPending)
+    return m_loadAt;
+  if (!d.remaining || !d.bufferFull)
+    return INT32_MAX;
+  // the buffer empties into the shift register when the current byte's bits run out
+  return m_cycle + d.timer + (d.bitsLeft - 1) * d.period;
+}
+
+
 void Apu::rebase(int32_t cycles)
 {
+  if (m_loadPending)
+    m_loadAt -= cycles;
   m_parity ^= cycles & 1;       // keeps (m_cycle ^ m_parity) & 1 the absolute cycle parity
   m_cycle -= cycles;
   m_nextSample -= (int64_t) cycles << 16;
@@ -476,10 +500,15 @@ void Apu::write(uint16_t addr, uint8_t v)
         if (!m_dmc.remaining) {
           m_dmc.addr = m_dmc.startAddr;
           m_dmc.remaining = m_dmc.startLength;
-          dmcFetch();
+          if (!m_dmc.bufferFull) {
+            // the "load DMA": 3 cycles after a write on a put cycle, 4 after one on a get cycle
+            m_loadPending = true;
+            m_loadAt = m_cycle - 1 + (m_nes->isGetCycle(m_cycle - 1) ? 4 : 3);
+          }
         }
       } else {
         m_dmc.remaining = 0;
+        m_loadPending = false;
       }
       break;
     case 0x4017:

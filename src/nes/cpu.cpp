@@ -61,7 +61,7 @@ void Cpu::interrupt(uint16_t vector, bool brk)
   Nes & nes = *m_nes;
   nes.ram[0x100 | S--] = PC >> 8;
   nes.ram[0x100 | S--] = PC;
-  nes.ram[0x100 | S--] = getP() | (brk ? 0x10 : 0);
+  nes.ram[0x100 | S--] = nes.bus = getP() | (brk ? 0x10 : 0);
   I = 1;
   PC = nes.read(vector) | (nes.read(vector + 1) << 8);
 }
@@ -70,7 +70,10 @@ void Cpu::interrupt(uint16_t vector, bool brk)
 // addressing modes: each declares 'a', the effective address
 #define RD(addr)     nes.read(addr)
 #define WR(addr, v)  nes.write(addr, v)
-#define FETCH16()    (RD(PC) | (RD((uint16_t)(PC + 1)) << 8))
+// Operand fetches leave their byte on the bus: it is the last value there before the data access
+// (what an open bus read returns). Opcode fetches and RAM/ROM data reads do not need to.
+#define OPERAND(addr) (nes.bus = RD(addr))
+#define FETCH16()    (RD(PC) | (OPERAND((uint16_t)(PC + 1)) << 8))
 
 // Dummy reads have side effects only on I/O registers ($2000-$401F: $2002 clears vblank, $2007
 // advances the address, $4015 and $4016 too), so they are only made there and cost nothing
@@ -91,9 +94,9 @@ static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t add
 }
 
 #define AM_IMM   uint16_t a = PC++;
-#define AM_ZP    uint16_t a = RD(PC++);
-#define AM_ZPX   uint16_t a = (uint8_t)(RD(PC++) + X);
-#define AM_ZPY   uint16_t a = (uint8_t)(RD(PC++) + Y);
+#define AM_ZP    uint16_t a = OPERAND(PC++);
+#define AM_ZPX   uint16_t a = (uint8_t)(OPERAND(PC++) + X);
+#define AM_ZPY   uint16_t a = (uint8_t)(OPERAND(PC++) + Y);
 #define AM_ABS   uint16_t a = FETCH16(); PC += 2;
 #define AM_ABSX  uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + X; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
 #define AM_ABSY  uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + Y; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
@@ -102,10 +105,10 @@ static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t add
                                if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
 #define AM_ABSYP uint16_t a; { uint16_t b = FETCH16(); PC += 2; a = b + Y; \
                                if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
-#define AM_IZX   uint16_t a; { uint8_t zp = RD(PC++) + X; a = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); }
-#define AM_IZY   uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); \
+#define AM_IZX   uint16_t a; { uint8_t zp = RD(PC++) + X; a = nes.ram[zp] | ((nes.bus = nes.ram[(uint8_t)(zp + 1)]) << 8); }
+#define AM_IZY   uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | ((nes.bus = nes.ram[(uint8_t)(zp + 1)]) << 8); \
                                a = b + Y; DUMMY_READ((b & 0xff00) | (a & 0xff)); }
-#define AM_IZYP  uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | (nes.ram[(uint8_t)(zp + 1)] << 8); \
+#define AM_IZYP  uint16_t a; { uint8_t zp = RD(PC++); uint16_t b = nes.ram[zp] | ((nes.bus = nes.ram[(uint8_t)(zp + 1)]) << 8); \
                                a = b + Y; if ((a ^ b) & 0xff00) { ++cycles; DUMMY_READ((b & 0xff00) | (a & 0xff)); } }
 
 // operations on a value m
@@ -141,13 +144,14 @@ static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t add
 #define OP_ISB(m)  { ++(m); OP_SBC(m); }
 
 #define READ(op, mode, OP)    case op: { mode OP(RD(a)); break; }
+#define READ_IMM(op, OP)      case op: { OP(OPERAND(PC++)); break; }
 #define STORE(op, mode, val)  case op: { mode WR(a, val); break; }
 #define RMW(op, mode, OP)     case op: { mode uint8_t m = RD(a); if (NES_UNLIKELY(IS_IO(a))) ioDummyWrite(nes, a, m); \
                                          OP(m); WR(a, m); break; }
 
 // the eight addressing modes of the ALU group (ORA AND EOR ADC STA LDA CMP SBC)
 #define ALU_READ(base, OP)  READ(base + 0x01, AM_IZX, OP)  READ(base + 0x05, AM_ZP, OP) \
-                            READ(base + 0x09, AM_IMM, OP)  READ(base + 0x0d, AM_ABS, OP) \
+                            READ_IMM(base + 0x09, OP)      READ(base + 0x0d, AM_ABS, OP) \
                             READ(base + 0x11, AM_IZYP, OP) READ(base + 0x15, AM_ZPX, OP) \
                             READ(base + 0x19, AM_ABSYP, OP) READ(base + 0x1d, AM_ABSXP, OP)
 
@@ -163,14 +167,14 @@ static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t add
 
 // a taken branch dummy reads the next byte, and on a page crossing the address before the
 // high byte is fixed (only made on I/O, like the other dummy reads)
-#define BRANCH(op, cond)  case op: { int8_t off = RD(PC++); if (cond) { uint16_t t = PC + off; \
+#define BRANCH(op, cond)  case op: { int8_t off = OPERAND(PC++); if (cond) { uint16_t t = PC + off; \
                                      DUMMY_READ(PC); \
                                      if ((t ^ PC) & 0xff00) { cycles += 2; DUMMY_READ((PC & 0xff00) | (t & 0xff)); } \
                                      else ++cycles; \
                                      PC = t; } break; }
 
-#define PUSH(v)  nes.ram[0x100 | S--] = (v)
-#define POP()    nes.ram[0x100 | ++S]
+#define PUSH(v)  (nes.ram[0x100 | S--] = nes.bus = (v))
+#define POP()    (nes.bus = nes.ram[0x100 | ++S])
 
 
 NES_HOT void Cpu::run(int32_t until, bool single)
@@ -193,7 +197,8 @@ NES_HOT void Cpu::run(int32_t until, bool single)
         break;
       continue;
     }
-    if (NES_UNLIKELY(irqLines) && !I) {
+    // right after CLI/SEI/PLP the poll still saw the old I flag (it changes in their last cycle)
+    if (NES_UNLIKELY(irqLines) && !(cycles == m_iChanged ? m_iOld : I)) {
       if (!single && cycles + 7 > until)
         break;
       interrupt(0xfffe, false);
@@ -224,13 +229,13 @@ NES_HOT void Cpu::run(int32_t until, bool single)
       STORE(0x86, AM_ZP, X)   STORE(0x8e, AM_ABS, X)  STORE(0x96, AM_ZPY, X)
       STORE(0x84, AM_ZP, Y)   STORE(0x8c, AM_ABS, Y)  STORE(0x94, AM_ZPX, Y)
 
-      READ(0xa2, AM_IMM, OP_LDX) READ(0xa6, AM_ZP, OP_LDX) READ(0xae, AM_ABS, OP_LDX)
+      READ_IMM(0xa2, OP_LDX) READ(0xa6, AM_ZP, OP_LDX) READ(0xae, AM_ABS, OP_LDX)
       READ(0xb6, AM_ZPY, OP_LDX) READ(0xbe, AM_ABSYP, OP_LDX)
-      READ(0xa0, AM_IMM, OP_LDY) READ(0xa4, AM_ZP, OP_LDY) READ(0xac, AM_ABS, OP_LDY)
+      READ_IMM(0xa0, OP_LDY) READ(0xa4, AM_ZP, OP_LDY) READ(0xac, AM_ABS, OP_LDY)
       READ(0xb4, AM_ZPX, OP_LDY) READ(0xbc, AM_ABSXP, OP_LDY)
 
-      READ(0xe0, AM_IMM, OP_CMPX) READ(0xe4, AM_ZP, OP_CMPX) READ(0xec, AM_ABS, OP_CMPX)
-      READ(0xc0, AM_IMM, OP_CMPY) READ(0xc4, AM_ZP, OP_CMPY) READ(0xcc, AM_ABS, OP_CMPY)
+      READ_IMM(0xe0, OP_CMPX) READ(0xe4, AM_ZP, OP_CMPX) READ(0xec, AM_ABS, OP_CMPX)
+      READ_IMM(0xc0, OP_CMPY) READ(0xc4, AM_ZP, OP_CMPY) READ(0xcc, AM_ABS, OP_CMPY)
       READ(0x24, AM_ZP, OP_BIT)   READ(0x2c, AM_ABS, OP_BIT)
 
       SHIFT_RMW(0x00, OP_ASL)
@@ -259,10 +264,10 @@ NES_HOT void Cpu::run(int32_t until, bool single)
         interrupt(0xfffe, true);
         break;
       case 0x20: { // JSR
-        uint8_t lo = RD(PC++);
+        uint8_t lo = OPERAND(PC++);
         PUSH(PC >> 8);
         PUSH(PC);
-        PC = lo | (RD(PC) << 8);
+        PC = lo | (OPERAND(PC) << 8);
         break;
       }
       case 0x60: { // RTS
@@ -285,14 +290,14 @@ NES_HOT void Cpu::run(int32_t until, bool single)
         break;
       }
       case 0x08: PUSH(getP() | 0x10); break;   // PHP
-      case 0x28: setP(POP()); break;           // PLP
+      case 0x28: m_iOld = I; m_iChanged = cycles; setP(POP()); break;   // PLP
       case 0x48: PUSH(A); break;               // PHA
       case 0x68: A = POP(); NZ(A); break;      // PLA
 
       case 0x18: C = 0; break;
       case 0x38: C = 1; break;
-      case 0x58: I = 0; break;
-      case 0x78: I = 1; break;
+      case 0x58: m_iOld = I; m_iChanged = cycles; I = 0; break;   // CLI
+      case 0x78: m_iOld = I; m_iChanged = cycles; I = 1; break;   // SEI
       case 0xb8: V = 0; break;
       case 0xd8: D = 0; break;
       case 0xf8: D = 1; break;

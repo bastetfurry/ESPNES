@@ -34,6 +34,11 @@ public:
   // end of frame: the frame relative cycle counter goes back by 'cycles'
   void    rebase(int32_t cycles);
 
+  // DMC DMA: the frame relative CPU cycle of the next sample fetch (INT32_MAX: none ahead), and
+  // the CPU cycles the fetches made so far have stolen
+  int32_t nextDmaCycle() const;
+  int     takeDmaStall()           { int n = m_dmaStall; m_dmaStall = 0; return n; }
+
   // samples produced since the last takeSamples(), signed 16 bit
   int             sampleCount() const      { return m_sampleCount; }
   int16_t const * samples() const          { return m_samples; }
@@ -120,6 +125,9 @@ private:
   Nes *    m_nes;
   Region   m_region;
   bool     m_frozen = false;
+  int      m_dmaStall = 0;
+  bool     m_loadPending = false;   // a $4015 write started a sample: its first fetch is due
+  int32_t  m_loadAt = 0;
 
   Pulse    m_pulse[2];
   Triangle m_tri;

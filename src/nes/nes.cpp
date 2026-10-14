@@ -147,16 +147,20 @@ void Nes::setMirroring(Mirroring mirroring)
 
 NES_HOT uint8_t Nes::readIO(uint16_t addr)
 {
+  if (NES_UNLIKELY(cpu.cycles - 1 >= m_dmaArmed))
+    dmaInRead(addr);
+
   if (addr < 0x4000)
-    return ppu.readRegister(addr);
+    return bus = ppu.readRegister(addr);
 
   if (addr >= 0x6000)
-    return prgRam[addr & 0x1fff];
+    return bus = prgRam[addr & 0x1fff];
 
   switch (addr) {
     case 0x4015: {
       apu.run(cpu.cycles);
-      uint8_t r = apu.readStatus();
+      // bit 5 is open bus, and the read does not change the external data bus
+      uint8_t r = (apu.readStatus() & ~0x20) | (bus & 0x20);
 #ifdef NES_TRACE
       if (nesTraceRead)
         nesTraceRead(*this, addr, r);
@@ -166,14 +170,17 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
     case 0x4016:
     case 0x4017: {
       int port = addr & 1;
-      if (m_strobe)
-        return 0x40 | (m_buttons[port] & 1);
-      uint8_t bit = m_shift[port] & 1;
-      m_shift[port] = (m_shift[port] >> 1) | 0x80;   // reads 1 after the eighth bit
-      return 0x40 | bit;                         // the upper bits are open bus, usually $40
+      uint8_t bit;
+      if (m_strobe) {
+        bit = m_buttons[port] & 1;
+      } else {
+        bit = m_shift[port] & 1;
+        m_shift[port] = (m_shift[port] >> 1) | 0x80;   // reads 1 after the eighth bit
+      }
+      return bus = (bus & 0xe0) | bit;           // only bit 0 is driven, the rest is open bus
     }
     default:
-      return addr >> 8;                          // open bus
+      return bus;                                // open bus: nothing drives it
   }
 }
 
@@ -252,6 +259,54 @@ void Nes::drawQueuedLines()
 }
 
 
+// Runs the CPU to 'until', halting it for the DMC's sample fetches (DMA) on the way. The
+// instruction the DMA falls into runs "armed": if it reads I/O or open bus on or after the DMA's
+// cycle, the DMA lands on that read (see dmaInRead). Otherwise the DMA happens after it. That is a
+// best effort: the halt on RAM/ROM reads is not placed exactly, which only matters for timing.
+// It costs nothing while the DMC is idle.
+NES_HOT void Nes::runCpu(int32_t until)
+{
+  for (;;) {
+    int32_t dma = apu.nextDmaCycle();
+    if (NES_LIKELY(dma >= until)) {
+      cpu.run(until);
+      return;
+    }
+    cpu.run(dma);
+    // the instruction the DMA falls into, unless that could run past 'until' (an event)
+    if (cpu.cycles < dma && dma + 8 <= until) {
+      m_dmaArmed = dma;
+      cpu.step();
+      m_dmaArmed = INT32_MAX;
+    }
+    if (apu.nextDmaCycle() == dma) {         // did not land on a read: right after the instruction
+      apu.run(cpu.cycles > dma ? cpu.cycles : dma);
+      cpu.cycles += apu.takeDmaStall();
+    }
+  }
+}
+
+
+// A DMA landing on a read of 'addr': the CPU halts on that read, and the halt and alignment
+// cycles read the address again (side effects on $2002, $2007, $4015, $4016), then the DMA fetches
+// the sample byte, which ends up on the data bus. The actual read comes after that.
+// Best effort: a DMA due anywhere in the instruction lands on its I/O read. Strictly it would only
+// land on it when due in that very cycle (an earlier one halts an opcode or operand fetch), but
+// that needs the halt placed exactly in every instruction, including the delay past write cycles,
+// which the instruction-granular CPU does not model; tried, it scored worse (39 against 42).
+void Nes::dmaInRead(uint16_t addr)
+{
+  int32_t at = m_dmaArmed;
+  m_dmaArmed = INT32_MAX;
+  int stall = isGetCycle(at) ? 3 : 4;
+  for (int i = 1; i < stall; ++i)
+    readIO(addr);
+  apu.run(at);                               // the fetch, its byte stays on the data bus
+  apu.takeDmaStall();
+  cpu.cycles += stall;
+}
+
+
 NES_HOT void Nes::runFrame(bool draw)
 {
   draw = draw && m_lines;
@@ -264,7 +319,7 @@ NES_HOT void Nes::runFrame(bool draw)
 
   // visible lines 0-239
   for (int y = 0; y < 240; ++y) {
-    cpu.run(cycleAt(y, 0));
+    runCpu(cycleAt(y, 0));
     if (draw) {
       ppu.captureLine(m_lineStates[y]);
       if (async) {
@@ -277,9 +332,9 @@ NES_HOT void Nes::runFrame(bool draw)
     // the flag rises about two dots after the pixel goes out
     if (hitX >= 0 && ppu.spr0HitCycle == INT32_MAX)
       ppu.spr0HitCycle = cycleAt(y, hitX + 2);
-    cpu.run(cycleAt(y, 65));
+    runCpu(cycleAt(y, 65));
     ppu.latchEvalStart();
-    cpu.run(cycleAt(y, 256));
+    runCpu(cycleAt(y, 256));
     ppu.endOfLine();
     if (ppu.renderingEnabled())
       m_mapper->hblank();
@@ -287,7 +342,7 @@ NES_HOT void Nes::runFrame(bool draw)
   }
 
   // line 240 is idle
-  cpu.run(cycleAt(241, 0));
+  runCpu(cycleAt(241, 0));
   apu.run(cpu.cycles);
 
   // Overclocking: extra lines here, before vblank, in which only the CPU runs. The picture's
@@ -297,7 +352,7 @@ NES_HOT void Nes::runFrame(bool draw)
   if (extra) {
     apu.setFrozen(true);
     for (int k = 1; k <= extra; ++k)
-      cpu.run(cycleAt(241 + k, 0));
+      runCpu(cycleAt(241 + k, 0));
     apu.run(cpu.cycles);
     apu.setFrozen(false);
   }
@@ -310,7 +365,7 @@ NES_HOT void Nes::runFrame(bool draw)
   ppu.vblSetUnits = unitsAt(vbl, 1);
   // the CPU's NMI input sees the edge a dot before $2002 does (measured with AccuracyCoin)
   ppu.nmiEdgeCycle = cycleAt(vbl, 0);
-  cpu.run(ppu.vblRaceCycle);
+  runCpu(ppu.vblRaceCycle);
   if (async) {
     uint32_t t0 = nesClock();
     while (m_linesDrawn.load(std::memory_order_acquire) < 240)
@@ -323,23 +378,23 @@ NES_HOT void Nes::runFrame(bool draw)
   int lines = m_linesPerFrame + extra;
   int pre = lines - 1;
   for (int y = vbl + 1; y <= pre; ++y) {
-    cpu.run(cycleAt(y, 0));
+    runCpu(cycleAt(y, 0));
     apu.run(cpu.cycles);
   }
 
   // pre-render line: the last of the frame. As at the start of vblank, the NMI input sees the
   // flag drop a dot before $2002 does.
   ppu.nmiClearCycle = cycleAt(pre, 0);
-  cpu.run(cycleAt(pre, 1));
+  runCpu(cycleAt(pre, 1));
   ppu.startFrame();
-  cpu.run(cycleAt(pre, 65));
+  runCpu(cycleAt(pre, 65));
   ppu.latchEvalStart();
-  cpu.run(cycleAt(pre, 256));
+  runCpu(cycleAt(pre, 256));
   ppu.endOfLine();
   ppu.copyVertical();
   if (ppu.renderingEnabled())
     m_mapper->hblank();
-  cpu.run(cycleAt(lines, 0));
+  runCpu(cycleAt(lines, 0));
   apu.run(cpu.cycles);
   ppu.nmiClearCycle = INT32_MAX;
   ppu.nmiEdgeCycle = INT32_MIN;

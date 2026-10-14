@@ -2,6 +2,8 @@
 // opcodes, instruction granular with exact cycle counts (page crossings and branches included).
 #pragma once
 
+#include <limits.h>
+
 #include "platform.h"
 
 class Nes;
@@ -59,6 +61,8 @@ private:
 
   Nes *    m_nes;
   int32_t  m_nmiEdge;
+  int32_t  m_iChanged = INT32_MIN;  // cycles after the last CLI/SEI/PLP, and the I flag before it
+  uint8_t  m_iOld = 1;
 
   // flags: N is bit 7 of n, Z is set when z == 0, the others are 0/1
   uint8_t  n, z, C, V, I, D;

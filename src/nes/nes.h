@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <limits.h>
 
 #include "platform.h"
 #include "cart.h"
@@ -108,11 +109,15 @@ public:
   uint8_t         ram[2048];
   uint8_t const * prgMap[4];      // 8 KB pages at $8000, $A000, $C000, $E000
   uint8_t *       prgRam;         // 8 KB at $6000, battery backed on some carts
+  uint8_t         bus = 0;        // the last value on the CPU data bus (open bus)
   static constexpr int PRG_RAM_SIZE = 0x2000;
 
 private:
 
   uint8_t readIO(uint16_t addr);
+  void    runCpu(int32_t until);
+  void    dmaInRead(uint16_t addr);
+  int32_t m_dmaArmed = INT32_MAX;    // DMC DMA cycle while its instruction runs (runCpu)
   void    writeIO(uint16_t addr, uint8_t value);
 
   // frame relative CPU cycle at which the PPU reaches (line, dot)
@@ -154,6 +159,11 @@ private:
 };
 
 
+// Reads of unmapped addresses ("open bus") return the last value on the CPU data bus. Within an
+// instruction, the access before a data read is always an operand (or pointer) fetch, so 'bus' is
+// set there by the CPU, on stack accesses, writes and I/O reads, but not on every RAM/ROM read:
+// that store cost ~9% of the CPU's time. readIO() leaves it alone for $4015, which only drives
+// the CPU's internal bus.
 inline uint8_t Nes::read(uint16_t addr)
 {
   if (addr >= 0x8000)
@@ -166,6 +176,7 @@ inline uint8_t Nes::read(uint16_t addr)
 
 inline void Nes::write(uint16_t addr, uint8_t value)
 {
+  bus = value;
   if (addr < 0x2000)
     ram[addr & 0x7ff] = value;
   else

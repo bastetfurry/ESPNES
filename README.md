@@ -69,6 +69,21 @@ that ROM and `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and 
 
 Every `.nes` file in `roms/` is built into the firmware: `tools/embed_roms.py` runs before each
 build and generates `src/generated/` (an `.incbin` per ROM and the index the ROM list shows).
+
+`roms/settings.csv` sets the menu: one game per line, in menu order, `#` lines are comments:
+
+```
+"Legend of Zelda, The (Europe).nes","The Legend of Zelda","zelda1.png","zelda1.txt"
+```
+
+File name, name shown in the menu, picture, manual, options (the last two are not used yet). A ROM
+the CSV does not list is still built in, at the end under its file name, with a warning; a
+malformed line (a missing quote, say) is reported and skipped.
+
+The picture is a PNG in `roms/`, scaled to fit 64x64 (aspect kept, black bars) and dithered to the
+NES palette by `tools/nesimage.py` (plain Python, no Pillow needed). Converted pictures are cached in
+`src/generated/pics/`. A missing picture is a build warning and an empty square in the menu.
+`python3 tools/nesimage.py picture.png preview.ppm` shows what a picture will look like.
 Constant data in flash is mapped into the address space through the cache, so the emulator reads
 a ROM in place. Nothing is copied to RAM, which a 128 KB game would not fit into anyway, and
 nothing is written to flash at runtime. Changing the games means rebuilding and flashing.

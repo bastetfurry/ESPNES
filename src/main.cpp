@@ -158,11 +158,17 @@ static void listRoms()
 {
   Serial.println("ROMs (send the number over serial to start one):");
   for (int i = 0; i < g_romCount; ++i)
-    Serial.printf("  %d: %s (%u bytes)\n", i, g_roms[i].name, (unsigned) g_roms[i].size);
+    Serial.printf("  %d: %s (%s, %u bytes%s)\n", i, g_roms[i].title, g_roms[i].name, (unsigned) g_roms[i].size,
+                  g_roms[i].picture ? ", picture" : "");
 }
 
 
 static fabgl::Canvas * s_canvas;
+
+// menu layout: the list on the left, a PICTURE_SIZE square picture on the right
+static constexpr int LIST_Y = 20;
+static constexpr int PIC_X  = 256 - 4 - PICTURE_SIZE;
+static constexpr int PIC_Y  = LIST_Y;
 
 static void drawMenu(int selected, int top, int visible, char const * message)
 {
@@ -184,21 +190,26 @@ static void drawMenu(int selected, int top, int visible, char const * message)
     cv.drawText(8, 56, "Put .nes files in roms/ and");
     cv.drawText(8, 68, "run pio run -t upload");
   }
+  // the list, left of the picture box
   for (int i = 0; i < visible && top + i < g_romCount; ++i) {
     int idx = top + i;
-    int y = 20 + i * 9;
+    int y = LIST_Y + i * 9;
     if (idx == selected) {
       cv.setBrushColor(Color::Blue);
-      cv.fillRectangle(0, y - 1, 255, y + 7);
+      cv.fillRectangle(0, y - 1, PIC_X - 6, y + 7);
     }
-    String n = g_roms[idx].name;
-    if (n.endsWith(".nes") || n.endsWith(".NES"))
-      n = n.substring(0, n.length() - 4);
-    if (n.length() > 31)
-      n = n.substring(0, 31);
+    String n = g_roms[idx].title;
+    if (n.length() > 21)
+      n = n.substring(0, 21);
     cv.setPenColor(idx == selected ? Color::BrightWhite : Color::White);
     cv.drawText(4, y, n.c_str());
     cv.setBrushColor(Color::Black);
+  }
+
+  // the picture box, empty when the game has no picture
+  if (g_romCount) {
+    cv.setPenColor(Color::BrightBlack);
+    cv.drawRectangle(PIC_X - 1, PIC_Y - 1, PIC_X + PICTURE_SIZE, PIC_Y + PICTURE_SIZE);
   }
 
   if (message) {
@@ -209,6 +220,16 @@ static void drawMenu(int selected, int top, int visible, char const * message)
   cv.drawText(4, 222, "Up/Down Enter:start  L/R:TV");
   cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
   cv.waitCompletion();
+
+  // the picture goes straight into the frame buffer, once the canvas is done with it
+  if (g_romCount && g_roms[selected].picture) {
+    uint8_t const * pic = g_roms[selected].picture;
+    for (int y = 0; y < PICTURE_SIZE; ++y) {
+      uint8_t * line = s_lines[PIC_Y + y];
+      for (int x = 0; x < PICTURE_SIZE; ++x)
+        line[(PIC_X + x) ^ 2] = s_raw[pic[y * PICTURE_SIZE + x] & 0x3f];   // the DMA's byte order
+    }
+  }
 }
 
 

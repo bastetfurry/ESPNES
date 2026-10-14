@@ -8,6 +8,7 @@ struct RomBlob {
   char const *    name;     // file name in roms/
   uint8_t const * data;     // in flash, mapped through the cache
   size_t          size;
+  char const *    config;   // contents of the optional <name>.cfg next to it, or nullptr
 };
 
 extern const RomBlob g_roms[];

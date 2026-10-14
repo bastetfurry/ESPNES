@@ -118,10 +118,112 @@ private:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 1: MMC1 (SxROM). Registers are written a bit at a time through a 5 bit shift register;
+// a write with bit 7 set resets it. Address bits 13-14 of the fifth write pick the register:
+//   $8000 control: mirroring (bits 0-1), PRG mode (2-3), CHR mode (4)
+//   $A000 CHR bank 0, $C000 CHR bank 1 (4 KB units, or 8 KB with bank 0 when CHR mode is 0)
+//   $E000 PRG bank (16 KB units)
+// SUROM (512 KB PRG) uses bit 4 of the CHR bank registers as the 256 KB PRG half.
+
+class MapperMMC1 : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    m_shift = 0;
+    m_count = 0;
+    m_control = 0x0c;     // PRG mode 3: the last bank fixed at $C000
+    m_chr0 = m_chr1 = m_prg = 0;
+    update();
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    if (value & 0x80) {
+      m_shift = 0;
+      m_count = 0;
+      m_control |= 0x0c;
+      update();
+      return;
+    }
+    m_shift |= (value & 1) << m_count;
+    if (++m_count < 5)
+      return;
+    switch ((addr >> 13) & 3) {
+      case 0: m_control = m_shift; break;
+      case 1: m_chr0    = m_shift; break;
+      case 2: m_chr1    = m_shift; break;
+      case 3: m_prg     = m_shift; break;
+    }
+    m_shift = 0;
+    m_count = 0;
+    update();
+  }
+
+private:
+  void update()
+  {
+    Cart const & c = m_nes.cart();
+
+    static const Mirroring mirroring[4] = { Mirroring::SingleA, Mirroring::SingleB, Mirroring::Vertical, Mirroring::Horizontal };
+    m_nes.setMirroring(mirroring[m_control & 3]);
+
+    // PRG, in 16 KB banks within a 256 KB half
+    int banks = c.info.prgSize / 0x4000;
+    int outer = (banks > 16) ? (m_chr0 & 0x10) : 0;
+    int bankLo, bankHi;
+    switch ((m_control >> 2) & 3) {
+      case 0: case 1:          // 32 KB
+        bankLo = (m_prg & 0x0e);
+        bankHi = bankLo | 1;
+        break;
+      case 2:                  // first bank fixed at $8000
+        bankLo = 0;
+        bankHi = m_prg & 0x0f;
+        break;
+      default:                 // last bank fixed at $C000
+        bankLo = m_prg & 0x0f;
+        bankHi = 0x0f;
+        break;
+    }
+    mapPrg16K(0, (outer | bankLo) % banks);
+    mapPrg16K(1, (outer | bankHi) % banks);
+
+    // CHR, in 4 KB banks
+    if (m_control & 0x10) {
+      mapChr4K(0, m_chr0);
+      mapChr4K(1, m_chr1);
+    } else {
+      mapChr4K(0, m_chr0 & 0x1e);
+      mapChr4K(1, (m_chr0 & 0x1e) | 1);
+    }
+  }
+
+  void mapPrg16K(int half, int bank)
+  {
+    uint8_t const * p = m_nes.cart().prg + bank * 0x4000;
+    m_nes.mapPrg8K(half * 2, p);
+    m_nes.mapPrg8K(half * 2 + 1, p + 0x2000);
+  }
+
+  void mapChr4K(int half, int bank)
+  {
+    for (int i = 0; i < 4; ++i)
+      m_nes.mapChr1K(half * 4 + i, bank * 4 + i);
+  }
+
+  uint8_t m_shift, m_count;
+  uint8_t m_control, m_chr0, m_chr1, m_prg;
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
     case 0:  return new MapperNROM(nes);
+    case 1:  return new MapperMMC1(nes);
     case 2:  return new MapperUxROM(nes);
     default: return nullptr;
   }
@@ -130,5 +232,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number == 0 || number == 2;
+  return number <= 2;
 }

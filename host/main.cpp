@@ -6,7 +6,8 @@
 //                                         a string of A B s(elect) S(tart) U D L R; async draws
 //                                         on a second thread, as the ESP32 build does on core 0;
 //                                         wav writes the sound (22050 Hz mono 16 bit)
-//                                         trace=FROM-TO logs PPU/APU register writes in those frames
+//                                         trace=FROM-TO logs PPU/APU register writes in those frames;
+//                                         sram=file loads the save RAM before and stores it after
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -162,6 +163,7 @@ static int run(int argc, char ** argv)
   std::vector<Hold> holds;
   bool async = false;
   char const * wavPath = nullptr;
+  char const * sramPath = nullptr;
   std::vector<int16_t> audio;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
@@ -170,6 +172,8 @@ static int run(int argc, char ** argv)
       async = true;
     else if (!strncmp(argv[i], "wav=", 4))
       wavPath = argv[i] + 4;
+    else if (!strncmp(argv[i], "sram=", 5))
+      sramPath = argv[i] + 5;
     else if (!strncmp(argv[i], "trace=", 6)) {
       sscanf(argv[i] + 6, "%d-%d", &s_traceFrom, &s_traceTo);
       nesTraceWrite = traceWrite;
@@ -195,6 +199,11 @@ static int run(int argc, char ** argv)
         }
     });
   }
+  if (sramPath)
+    if (FILE * sf = fopen(sramPath, "rb")) {
+      printf("loaded save RAM: %zu bytes\n", fread(nes.prgRam, 1, Nes::PRG_RAM_SIZE, sf));
+      fclose(sf);
+    }
   nes.powerOn();
   for (int f = 0; f < frames; ++f) {
     uint8_t b = 0;
@@ -215,6 +224,11 @@ static int run(int argc, char ** argv)
     worker.join();
   if (wavPath)
     writeWav(wavPath, audio, 22050);
+  if (sramPath) {
+    FILE * sf = fopen(sramPath, "wb");
+    fwrite(nes.prgRam, 1, Nes::PRG_RAM_SIZE, sf);
+    fclose(sf);
+  }
   FILE * f = fopen(outPath, "wb");
   fprintf(f, "P6\n256 240\n255\n");
   for (int y = 0; y < 240; ++y)

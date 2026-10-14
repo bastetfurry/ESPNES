@@ -55,6 +55,9 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     return "Out of memory";
   }
   ppu.chrWritable = m_chrRam != nullptr;
+  // PRG RAM keeps its contents over a reset (and a battery keeps it over power off: the caller
+  // loads the save into prgRam after insert())
+  memset(prgRam, 0, 0x2000);
   if (m_cart.info.regionKnown)
     setRegion(m_cart.info.region);
   return nullptr;
@@ -85,7 +88,6 @@ void Nes::setRegion(Region region)
 void Nes::powerOn()
 {
   memset(ram, 0, sizeof(ram));
-  memset(prgRam, 0, 0x2000);
   if (m_chrRam)
     memset(m_chrRam, 0, 0x2000);
   m_strobe = false;

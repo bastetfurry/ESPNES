@@ -14,7 +14,8 @@
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start,
 //       Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up.
-// Serial console: a number starts that ROM from the list, 'q' leaves the game, 's' taps Start.
+// Serial console: a number starts that ROM from the list, 'q' leaves the game, and
+// a b e s u d l r tap A, B, sElect, Start and the directions.
 
 #include <Arduino.h>
 #include <SPIFFS.h>
@@ -24,6 +25,7 @@
 
 #include "fabgl.h"
 #include "esp_timer.h"
+#include "esp32/rom/crc.h"
 
 #include "nes/nes.h"
 #include "nes/palette.h"
@@ -265,12 +267,57 @@ static int chooseRom(char const * message)
 ///////////////////////////////////////////////////////////////////////////////
 // running a game
 
-static Region guessRegion(String const & name)
+// Settings from a ROM's optional .cfg (built in next to it, see tools/embed_roms.py):
+//   save   = yes | no      battery backed save RAM, overriding the header's battery flag
+//   region = ntsc | pal    TV system, overriding the header and the file name
+// One "key = value" per line; '#' starts a comment.
+struct RomConfig {
+  int save   = -1;          // -1 = from the header
+  int region = -1;          // -1 = automatic, else (int) Region
+};
+
+static RomConfig parseConfig(char const * text)
+{
+  RomConfig cfg;
+  if (!text)
+    return cfg;
+  while (*text) {
+    char const * end = strchr(text, '\n');
+    String line = end ? String(text).substring(0, end - text) : String(text);
+    text = end ? end + 1 : text + strlen(text);
+    int hash = line.indexOf('#');
+    if (hash >= 0)
+      line = line.substring(0, hash);
+    int eq = line.indexOf('=');
+    if (eq < 0)
+      continue;
+    String key = line.substring(0, eq), value = line.substring(eq + 1);
+    key.trim();
+    value.trim();
+    key.toLowerCase();
+    value.toLowerCase();
+    bool yes = value == "yes" || value == "on" || value == "true" || value == "1";
+    bool no  = value == "no" || value == "off" || value == "false" || value == "0";
+    if (key == "save" && (yes || no))
+      cfg.save = yes;
+    else if (key == "region" && (value == "ntsc" || value == "pal"))
+      cfg.region = (int)(value == "pal" ? Region::PAL : Region::NTSC);
+    else
+      Serial.printf("config: ignoring \"%s\"\n", line.c_str());
+  }
+  return cfg;
+}
+
+
+// the menu's choice beats the .cfg, which beats the header, which beats the file name
+static Region chooseRegion(String const & name, RomConfig const & cfg)
 {
   if (s_regionChoice == RegionChoice::NTSC)
     return Region::NTSC;
   if (s_regionChoice == RegionChoice::PAL)
     return Region::PAL;
+  if (cfg.region >= 0)
+    return (Region) cfg.region;
   if (nes.cart().info.regionKnown)
     return nes.cart().info.region;
   // GoodNES / No-Intro naming
@@ -281,18 +328,98 @@ static Region guessRegion(String const & name)
 }
 
 
+///////////////////////////////////////////////////////////////////////////////
+// save RAM: loaded when a game starts, written back when leaving it, only if it changed
+
+static String   s_savePath;          // empty: the game has no battery backed RAM
+static uint32_t s_saveHash;          // of the save RAM as loaded
+
+
+static uint32_t hashSaveRam()
+{
+  uint32_t h = 2166136261u;          // FNV-1a
+  for (int i = 0; i < Nes::PRG_RAM_SIZE; ++i)
+    h = (h ^ nes.prgRam[i]) * 16777619u;
+  return h;
+}
+
+
+// SPIFFS names are at most 31 characters: a readable start of the ROM's name, then the CRC32 of
+// its contents, so a renamed ROM keeps its save
+static String savePathFor(RomBlob const & rom)
+{
+  String stem;
+  for (char const * p = rom.name; *p && stem.length() < 14; ++p) {
+    char c = *p;
+    if (c == '.' && !strcasecmp(p, ".nes"))
+      break;
+    stem += isalnum((unsigned char) c) ? c : '_';
+  }
+  char crc[10];
+  snprintf(crc, sizeof(crc), "_%08x", (unsigned) crc32_le(0, rom.data, rom.size));
+  return "/" + stem + crc + ".sav";
+}
+
+
+static void loadSave()
+{
+  File f = SPIFFS.exists(s_savePath) ? SPIFFS.open(s_savePath, "r") : File();
+  if (f) {
+    size_t got = f.read(nes.prgRam, Nes::PRG_RAM_SIZE);
+    f.close();
+    Serial.printf("Save RAM loaded from %s (%u bytes)\n", s_savePath.c_str(), (unsigned) got);
+  } else {
+    Serial.printf("No save yet (%s)\n", s_savePath.c_str());
+  }
+  s_saveHash = hashSaveRam();
+}
+
+
+static void storeSave()
+{
+  if (s_savePath.isEmpty())
+    return;
+  uint32_t h = hashSaveRam();
+  if (h == s_saveHash) {
+    Serial.println("Save RAM unchanged, not written");
+    return;
+  }
+  // writing flash stops the cache, and with it the sound interrupt: pause the sound around it
+  s_soundGen->play(false);
+  File f = SPIFFS.open(s_savePath, "w");
+  size_t written = f ? f.write(nes.prgRam, Nes::PRG_RAM_SIZE) : 0;
+  if (f)
+    f.close();
+  s_soundGen->play(true);
+  if (written == Nes::PRG_RAM_SIZE) {
+    s_saveHash = h;
+    Serial.printf("Save RAM written to %s\n", s_savePath.c_str());
+  } else {
+    Serial.printf("Writing %s FAILED\n", s_savePath.c_str());
+  }
+}
+
+
 // Returns nullptr or an error message.
 static char const * loadRom(RomBlob const & rom)
 {
   // the image stays in flash: the cartridge reads it in place
   if (char const * err = nes.insert(rom.data, rom.size))
     return err;
-  nes.setRegion(guessRegion(rom.name));
+  RomConfig cfg = parseConfig(rom.config);
+  nes.setRegion(chooseRegion(rom.name, cfg));
+
+  bool battery = cfg.save >= 0 ? cfg.save : nes.cart().info.battery;
+  s_savePath = battery ? savePathFor(rom) : String();
+  if (battery)
+    loadSave();
+
   nes.powerOn();
-  Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s, free heap %u\n",
+  Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
                 nes.cart().info.chrSize / 1024, nes.cart().info.chrSize ? "" : " (RAM)",
-                nes.region() == Region::PAL ? "PAL" : "NTSC", (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
+                nes.region() == Region::PAL ? "PAL" : "NTSC", battery ? ", battery save" : "",
+                (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
   return nullptr;
 }
 
@@ -331,7 +458,8 @@ static void runGame()
   nes.apu.setSampleRate(audioRate);
   uint32_t minFill = RING_SIZE;
 
-  int serialStart = 0;
+  uint8_t serialButtons = 0;
+  int serialFrames = 0;
 
   int64_t next = esp_timer_get_time();
   int skipped = 0;
@@ -358,17 +486,21 @@ static void runGame()
         Serial.printf("Volume %d/8\n", s_volume);
       }
     }
-    // serial console: 'q' leaves, 's' taps Start (for testing without a keyboard)
+    // serial console, for testing without a keyboard: 'q' leaves, a b e(select) s(tart) u d l r
+    // tap a button for 10 frames
     if (Serial.available()) {
       int c = Serial.read();
       if (c == 'q')
         return;
-      if (c == 's')
-        serialStart = 10;
+      static char const keys[] = "abesudlr";
+      if (char const * k = strchr(keys, c)) {
+        serialButtons = 1 << (k - keys);
+        serialFrames = 10;
+      }
     }
-    nes.setButtons(0, readPad(kb) | (serialStart ? BTN_START : 0));
-    if (serialStart)
-      --serialStart;
+    nes.setButtons(0, readPad(kb) | (serialFrames ? serialButtons : 0));
+    if (serialFrames)
+      --serialFrames;
 
     int64_t t0 = esp_timer_get_time();
     nes.runFrame(draw);
@@ -465,6 +597,7 @@ void setup()
       continue;
     s_canvas->waitCompletion();
     runGame();
+    storeSave();
   }
 }
 

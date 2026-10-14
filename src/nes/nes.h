@@ -89,7 +89,8 @@ public:
   Apu             apu;
   uint8_t         ram[2048];
   uint8_t const * prgMap[4];      // 8 KB pages at $8000, $A000, $C000, $E000
-  uint8_t *       prgRam;         // 8 KB at $6000
+  uint8_t *       prgRam;         // 8 KB at $6000, battery backed on some carts
+  static constexpr int PRG_RAM_SIZE = 0x2000;
 
 private:
 

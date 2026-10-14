@@ -1,7 +1,8 @@
 # PlatformIO pre-build script: builds every ROM in roms/ into the firmware.
 #
 # Writes src/generated/roms.S, which .incbin's each ROM into flash rodata, and
-# src/generated/romindex.cpp with the table the ROM list reads (see src/romindex.h). Constant data
+# src/generated/romindex.cpp with the table the ROM list reads (see src/romindex.h). An optional
+# "<rom name>.cfg" next to a ROM (same name, .cfg instead of .nes) is built in as its config text. Constant data
 # in flash is mapped into the address space through the cache, so the emulator reads the ROMs in
 # place: no RAM, no copying, no flash writes. Files are only rewritten when they change, so an
 # unchanged ROM set does not trigger a rebuild.
@@ -31,12 +32,29 @@ for i, name in enumerate(roms):
             ".global nesrom_%d" % i, "nesrom_%d:" % i, ".incbin " + asmString(path), ""]
     cpp.append("extern const uint8_t nesrom_%d[];" % i)
 
+def cString(s):
+    # a C string literal of the UTF-8 bytes; escapes are closed with "" so a following hex digit
+    # is not read as part of them
+    out = ""
+    for b in s.encode("utf-8"):
+        ch = chr(b)
+        if ch == "\\" or ch == '"':
+            out += "\\" + ch
+        elif ch == "\n":
+            out += "\\n"
+        elif b < 32 or b > 126:
+            out += '\\x%02x""' % b
+        else:
+            out += ch
+    return '"' + out + '"'
+
 cpp += ["", "const RomBlob g_roms[] = {"]
 for i, name in enumerate(roms):
-    cname = name.replace("\\", "\\\\").replace('"', '\\"')
-    cpp.append('  { "%s", nesrom_%d, %d },' % (cname, i, os.path.getsize(os.path.join(romDir, name))))
+    cfgPath = os.path.join(romDir, name[:-4] + ".cfg")
+    cfg = cString(open(cfgPath, encoding="utf-8", errors="replace").read()) if os.path.exists(cfgPath) else "nullptr"
+    cpp.append('  { %s, nesrom_%d, %d, %s },' % (cString(name), i, os.path.getsize(os.path.join(romDir, name)), cfg))
 if not roms:
-    cpp.append("  { nullptr, nullptr, 0 },")
+    cpp.append("  { nullptr, nullptr, 0, nullptr },")
 cpp += ["};", "", "const int g_romCount = %d;" % len(roms), ""]
 
 def writeIfChanged(path, text):

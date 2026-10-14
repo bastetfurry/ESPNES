@@ -10,7 +10,7 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
 - **PPU:** scanline renderer with the loopy scroll model, so `$2005`/`$2006` splits work; sprite 0
   hit is timed to the dot, 8 sprites per line, 8x16 sprites, left column clipping, greyscale.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
-- **Mappers:** 0 (NROM), 2 (UxROM). The cartridge layer works through bank pointer tables, so a
+- **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the
@@ -63,7 +63,7 @@ Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up. In the 
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `s` taps Start and `q` leaves the game. Frame timings are printed every 5 seconds.
+that ROM and `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -76,6 +76,30 @@ nothing is written to flash at runtime. Changing the games means rebuilding and 
 Reading PRG from flash through the cache costs nothing measurable (SMB: 8.7 ms per frame either
 way). The firmware partition is 3.4 MB, so about 2.7 MB of ROMs fit next to the code.
 
+## Save games
+
+Games with a battery (the header's battery flag) keep their 8 KB of save RAM in the 512 KB SPIFFS
+partition. It is loaded when the game starts and written back when you return to the ROM list
+with Esc, only if it changed. A reset (F1) keeps it, as on the console. Switching the board off
+while in a game loses what happened since the game was started, so go back to the list first.
+
+Save files are named after the start of the ROM's name plus the CRC32 of its contents, so
+renaming a ROM keeps its save. Some games (Zelda) also use that RAM as working memory, so it
+changes every session and gets written on every return to the list.
+
+## Per game settings
+
+An optional `Game.cfg` next to `Game.nes` in `roms/` is built in with it:
+
+```
+# yes/no: battery save RAM, overriding the header (some games use the RAM without a battery)
+save = no
+# ntsc/pal: TV system, overriding the header and the "(Europe)"-style name tags
+region = pal
+```
+
+The TV choice in the ROM list (Left/Right), when not Auto, overrides both.
+
 ## Build & flash
 
 ```sh
@@ -83,14 +107,14 @@ pio run -t upload       # firmware with the ROMs (~/.platformio/penv/bin/pio if 
 pio device monitor
 ```
 
-The 512 KB SPIFFS partition is formatted on the first boot and reserved for save games.
+The 512 KB SPIFFS partition is formatted on the first boot and holds the save games.
 
 ## Layout
 
 - `src/nes/` the emulator core, plain C++ without ESP32 dependencies
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
 - `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
-  thread like the ESP32 build), sound to WAV (`wav=file.wav`), a trace of PPU register writes per scanline and dot
+  thread like the ESP32 build), sound to WAV (`wav=file.wav`), save RAM in and out (`sram=file`), a trace of PPU register writes per scanline and dot
   (`trace=FROM-TO` frames), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
 - `roms/` built into the firmware by `tools/embed_roms.py`

@@ -423,6 +423,257 @@ private:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 5: MMC5 (Castlevania III, the Koei games, Just Breed). Registers at $5100-$5206:
+//   $5100 PRG mode (32/16/16+8/8 KB), $5114-$5117 PRG banks (bit 7: ROM, else PRG RAM)
+//   $5101 CHR mode (8/4/2/1 KB), $5120-$5127 CHR set A, $5128-$512B set B, $5130 upper bits.
+//     With 8x16 sprites, sprites use set A and the background set B; with 8x8 sprites both use
+//     the set written last. (So the MMC5 watches PPUCTRL.)
+//   $5104 ExRAM mode, $5105 nametable mapping (per slot: CIRAM A, CIRAM B, ExRAM, fill),
+//   $5106/$5107 fill tile and attribute, $5C00-$5FFF ExRAM (1 KB)
+//   $5203 IRQ scanline, $5204 IRQ enable (write) / pending + in frame (read), $5205/6 multiplier
+// The scanline counter: the MMC5 sees a frame start at line 0 and counts lines from there; it
+// fires at about dot 4 of the compared line (lineStart).
+// Not emulated: ExRAM's extended attribute mode, the vertical split, the sound channels (an NES
+// cannot play them anyway), PRG RAM beyond the 8 KB at $6000.
+
+class MapperMMC5 : public Mapper {
+public:
+  MapperMMC5(Nes & nes) : Mapper(nes)
+  {
+    wantsLineStart = true;
+    wantsPpuCtrl = true;
+  }
+
+  void reset() override
+  {
+    m_prgMode = 3;
+    m_chrMode = 3;
+    m_exramMode = 0;
+    for (int i = 0; i < 4; ++i)
+      m_prg[i] = 0xff;
+    for (int i = 0; i < 12; ++i)
+      m_chr[i] = i < 8 ? i : i - 8;
+    m_chrUpper = 0;
+    m_lastSetB = false;
+    m_sprites8x16 = false;
+    m_irqCompare = 0;
+    m_irqEnabled = m_irqPending = m_inFrame = false;
+    m_line = 0;
+    m_mulA = m_mulB = 0xff;
+    memset(m_exram, 0, sizeof(m_exram));
+    m_fillTile = m_fillAttr = 0;
+    updateFill();
+    m_nt = 0;
+    updatePrg();
+    updateChr();
+    updateNametables();
+  }
+
+  int readLow(uint16_t addr) override
+  {
+    switch (addr) {
+      case 0x5204: {
+        int r = (m_irqPending ? 0x80 : 0) | (m_inFrame ? 0x40 : 0);
+        m_irqPending = false;
+        m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+        return r;
+      }
+      case 0x5205: return (m_mulA * m_mulB) & 0xff;
+      case 0x5206: return (m_mulA * m_mulB) >> 8;
+    }
+    if (addr >= 0x5c00 && addr <= 0x5fff && m_exramMode >= 2)
+      return m_exram[addr - 0x5c00];
+    return -1;
+  }
+
+  void writeLow(uint16_t addr, uint8_t v) override
+  {
+    if (addr >= 0x5c00 && addr <= 0x5fff) {
+      if (m_exramMode != 3)
+        m_exram[addr - 0x5c00] = v;
+      return;
+    }
+    switch (addr) {
+      case 0x5100: m_prgMode = v & 3; updatePrg(); break;
+      case 0x5101: m_chrMode = v & 3; updateChr(); break;
+      case 0x5104: m_exramMode = v & 3; updateNametables(); break;
+      case 0x5105: m_nt = v; updateNametables(); break;
+      case 0x5106: m_fillTile = v; updateFill(); break;
+      case 0x5107: m_fillAttr = v & 3; updateFill(); break;
+      case 0x5114: case 0x5115: case 0x5116: case 0x5117:
+        m_prg[addr - 0x5114] = v;
+        updatePrg();
+        break;
+      case 0x5130: m_chrUpper = v & 3; break;
+      case 0x5203: m_irqCompare = v; break;
+      case 0x5204:
+        m_irqEnabled = v & 0x80;
+        if (m_irqEnabled && m_irqPending)
+          m_nes.cpu.setIrq(Cpu::IRQ_MAPPER);
+        else if (!m_irqEnabled)
+          m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+        break;
+      case 0x5205: m_mulA = v; break;
+      case 0x5206: m_mulB = v; break;
+      default:
+        if (addr >= 0x5120 && addr <= 0x512b) {
+          m_chr[addr - 0x5120] = v | (m_chrUpper << 8);
+          m_lastSetB = addr >= 0x5128;
+          updateChr();
+        }
+        break;
+    }
+  }
+
+  // PRG RAM selected into $8000-$DFFF: writes go there
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    int slot = (addr >> 13) & 3;
+    if (m_prgIsRam[slot])
+      m_nes.prgRam[addr & 0x1fff] = value;
+  }
+
+  void ppuCtrl(uint8_t value) override
+  {
+    bool tall = value & 0x20;
+    if (tall != m_sprites8x16) {
+      m_sprites8x16 = tall;
+      updateChr();
+    }
+  }
+
+  void lineStart(int y) override
+  {
+    if (y == 0) {
+      m_inFrame = true;
+      m_line = 0;
+      return;
+    }
+    if (!m_inFrame)
+      return;
+    if (++m_line == m_irqCompare && m_irqCompare) {
+      m_irqPending = true;
+      if (m_irqEnabled)
+        m_nes.cpu.setIrq(Cpu::IRQ_MAPPER);
+    }
+  }
+
+  void vblank() override
+  {
+    m_inFrame = false;
+  }
+
+private:
+  void mapPrg(int slot, uint8_t reg, bool romOnly)
+  {
+    Cart const & c = m_nes.cart();
+    int banks = c.info.prgSize / 0x2000;
+    m_prgIsRam[slot] = !romOnly && !(reg & 0x80);
+    if (m_prgIsRam[slot])
+      m_nes.mapPrg8K(slot, m_nes.prgRam);        // only 8 KB of PRG RAM: every RAM bank is it
+    else
+      m_nes.mapPrg8K(slot, c.prg + ((reg & 0x7f) % banks) * 0x2000);
+  }
+
+  void updatePrg()
+  {
+    uint8_t const * r = m_prg;
+    switch (m_prgMode) {
+      case 0:                                      // 32 KB
+        for (int i = 0; i < 4; ++i)
+          mapPrg(i, ((r[3] & 0x7c) | i) | 0x80, true);
+        break;
+      case 1:                                      // 16 + 16 KB
+        mapPrg(0, (r[1] & 0xfe), false);
+        mapPrg(1, (r[1] & 0xfe) | 1, false);
+        mapPrg(2, (r[3] & 0x7e) | 0x80, true);
+        mapPrg(3, (r[3] & 0x7e) | 0x81, true);
+        break;
+      case 2:                                      // 16 + 8 + 8 KB
+        mapPrg(0, (r[1] & 0xfe), false);
+        mapPrg(1, (r[1] & 0xfe) | 1, false);
+        mapPrg(2, r[2], false);
+        mapPrg(3, r[3] | 0x80, true);
+        break;
+      default:                                     // 4 x 8 KB
+        mapPrg(0, r[0], false);
+        mapPrg(1, r[1], false);
+        mapPrg(2, r[2], false);
+        mapPrg(3, r[3] | 0x80, true);
+        break;
+    }
+    // with only RAM bit 7 meaning "ROM", writes to ROM slots are ignored
+  }
+
+  // the 1 KB banks a set maps to $0000-$1FFF (set B only has 4 registers, repeated)
+  void setBanks(bool setB, int out[8])
+  {
+    int const * r = m_chr + (setB ? 8 : 0);
+    int n = setB ? 4 : 8;
+    auto reg = [&](int i) { return setB ? r[i & 3] : r[i]; };
+    (void) n;
+    switch (m_chrMode) {
+      case 0: for (int i = 0; i < 8; ++i) out[i] = reg(7) * 8 + i; break;
+      case 1: for (int i = 0; i < 8; ++i) out[i] = reg(i < 4 ? 3 : 7) * 4 + (i & 3); break;
+      case 2: for (int i = 0; i < 8; ++i) out[i] = reg((i | 1)) * 2 + (i & 1); break;
+      default: for (int i = 0; i < 8; ++i) out[i] = reg(i); break;
+    }
+  }
+
+  void updateChr()
+  {
+    int a[8], b[8];
+    setBanks(false, a);
+    setBanks(true, b);
+    // 8x16 sprites: sprites from A, background from B; 8x8: both from the set written last
+    int const * spr = m_sprites8x16 ? a : (m_lastSetB ? b : a);
+    int const * bg  = m_sprites8x16 ? b : (m_lastSetB ? b : a);
+    for (int i = 0; i < 8; ++i) {
+      m_nes.mapChrSpr1K(i, spr[i]);
+      m_nes.mapChrBg1K(i, bg[i]);
+    }
+  }
+
+  void updateFill()
+  {
+    memset(m_fill, m_fillTile, 0x3c0);
+    memset(m_fill + 0x3c0, m_fillAttr * 0x55, 0x40);
+  }
+
+  void updateNametables()
+  {
+    for (int i = 0; i < 4; ++i) {
+      int sel = (m_nt >> (i * 2)) & 3;
+      uint8_t * page;
+      switch (sel) {
+        case 0:  page = m_nes.ppu.vram; break;
+        case 1:  page = m_nes.ppu.vram + 0x400; break;
+        case 2:  page = m_exramMode <= 1 ? m_exram : m_zeros; break;
+        default: page = m_fill; break;
+      }
+      m_nes.mapNametable(i, page);
+    }
+  }
+
+  uint8_t m_prgMode, m_chrMode, m_exramMode;
+  uint8_t m_prg[4];
+  bool    m_prgIsRam[4] = { };
+  int     m_chr[12];
+  uint8_t m_chrUpper;
+  bool    m_lastSetB, m_sprites8x16;
+  uint8_t m_irqCompare;
+  bool    m_irqEnabled, m_irqPending, m_inFrame;
+  int     m_line;
+  uint8_t m_mulA, m_mulB;
+  uint8_t m_nt;
+  uint8_t m_fillTile, m_fillAttr;
+  uint8_t m_exram[0x400];
+  uint8_t m_fill[0x400];
+  uint8_t m_zeros[0x400] = { };
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
@@ -430,6 +681,7 @@ Mapper * createMapper(int number, Nes & nes)
     case 1:  return new MapperMMC1(nes);
     case 2:  return new MapperUxROM(nes);
     case 4:  return new MapperMMC3(nes);
+    case 5:  return new MapperMMC5(nes);
     case 7:  return new MapperAxROM(nes);
     case 71: return new MapperCamerica(nes);
     default: return nullptr;
@@ -439,5 +691,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number <= 2 || number == 4 || number == 7 || number == 71;
+  return number <= 2 || number == 4 || number == 5 || number == 7 || number == 71;
 }

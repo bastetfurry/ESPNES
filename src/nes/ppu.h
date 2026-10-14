@@ -35,6 +35,7 @@ public:
     uint8_t   evalStart;            // OAM address sprite evaluation starts at
     uint8_t   palette[32];
     uint8_t * chrMap[8];
+    uint8_t * sprChrMap[8];
     uint8_t * ntMap[4];
   };
 
@@ -64,7 +65,8 @@ public:
   bool nmiEnabled() const           { return m_ctrl & 0x80; }
 
   // PPU address space: CHR in 1 KB pages, nametables in 1 KB pages
-  uint8_t * chrMap[8];
+  uint8_t * chrMap[8];               // background fetches, and $2007
+  uint8_t * sprChrMap[8];            // sprite fetches; the same as chrMap except on the MMC5
   uint8_t * ntMap[4];
   bool      chrWritable;
 

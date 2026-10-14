@@ -131,11 +131,11 @@ static void traceWrite(Nes & nes, uint16_t addr, uint8_t value)
 {
   if ((int) nes.frameCount < s_traceFrom || (int) nes.frameCount > s_traceTo)
     return;
-  if (addr >= 0x4000 && addr != 0x4014 && !s_traceApu)
-    return;   // the PPU and OAM DMA only, unless traceapu
+  if (addr >= 0x4000 && addr < 0x5000 && addr != 0x4014 && !s_traceApu)
+    return;   // the PPU, OAM DMA and mapper registers at $5000-$5FFF only, unless traceapu
   int dot, line = nes.currentLine(&dot);
   printf("frame %4u line %3d dot %3d  $%04X = $%02X\n", nes.frameCount, line, dot,
-         addr < 0x4000 ? 0x2000 | (addr & 7) : addr, value);
+         addr >= 0x2000 && addr < 0x4000 ? 0x2000 | (addr & 7) : addr, value);
 }
 
 

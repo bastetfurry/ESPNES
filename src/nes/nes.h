@@ -114,9 +114,13 @@ public:
     m_prgSource[slot] = p;
     prgMap[slot] = NES_UNLIKELY(m_romCheats) ? patchedPage(slot, p) : p;
   }
-  void mapChr1K(int slot, int bank);
+  void mapChr1K(int slot, int bank);            // background and sprites alike
+  void mapChrBg1K(int slot, int bank);          // background (and $2007) only
+  void mapChrSpr1K(int slot, int bank);         // sprites only
   void mapChr8K(int bank);
   void setMirroring(Mirroring mirroring);
+  void mapNametable(int slot, uint8_t * page)  { ppu.ntMap[slot] = page; }
+  void mapperPpuCtrl(uint8_t value)            { if (m_mapper && m_mapper->wantsPpuCtrl) m_mapper->ppuCtrl(value); }
 
   // --- CPU bus ---
   inline uint8_t read(uint16_t addr);

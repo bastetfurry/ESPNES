@@ -48,8 +48,22 @@ public:
   // CPU write to $8000-$FFFF (mapper registers).
   virtual void writeRegister(uint16_t addr, uint8_t value) { }
 
+  // CPU access to $4020-$5FFF (MMC5 registers and ExRAM). readLow returns -1 for open bus.
+  virtual int  readLow(uint16_t addr)                    { return -1; }
+  virtual void writeLow(uint16_t addr, uint8_t value)   { }
+
   // Called once per rendered scanline at about dot 260, where the MMC3 sees PPU A12 rise.
   virtual void hblank() { }
+
+  // Mappers that set wantsLineStart get lineStart(y) at about dot 4 of each visible line while
+  // rendering is on (the MMC5's scanline detection), and vblank() once per frame.
+  bool         wantsLineStart = false;
+  virtual void lineStart(int y) { }
+  virtual void vblank() { }
+
+  // A CPU write to PPUCTRL ($2000): the MMC5 picks its CHR bank sets by the sprite size.
+  bool         wantsPpuCtrl = false;
+  virtual void ppuCtrl(uint8_t value) { }
 
 protected:
   Nes & m_nes;

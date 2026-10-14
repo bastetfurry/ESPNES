@@ -196,11 +196,29 @@ uint8_t const * Nes::patchedPage(int slot, uint8_t const * page)
 }
 
 
+static inline uint8_t * chrPage(Cart const & cart, uint8_t * chrRam, int bank)
+{
+  uint8_t * base = chrRam ? chrRam : (uint8_t *) cart.chr;
+  int size = chrRam ? 0x2000 : cart.info.chrSize;
+  return base + ((bank * 0x400) & (size - 1));
+}
+
+
 void Nes::mapChr1K(int slot, int bank)
 {
-  uint8_t * base = m_chrRam ? m_chrRam : (uint8_t *) m_cart.chr;
-  int size = m_chrRam ? 0x2000 : m_cart.info.chrSize;
-  ppu.chrMap[slot] = base + ((bank * 0x400) & (size - 1));
+  ppu.chrMap[slot] = ppu.sprChrMap[slot] = chrPage(m_cart, m_chrRam, bank);
+}
+
+
+void Nes::mapChrBg1K(int slot, int bank)
+{
+  ppu.chrMap[slot] = chrPage(m_cart, m_chrRam, bank);
+}
+
+
+void Nes::mapChrSpr1K(int slot, int bank)
+{
+  ppu.sprChrMap[slot] = chrPage(m_cart, m_chrRam, bank);
 }
 
 
@@ -266,6 +284,11 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
       return bus = (bus & 0xe0) | bit;           // only bit 0 is driven, the rest is open bus
     }
     default:
+      if (addr >= 0x4020) {
+        int r = m_mapper->readLow(addr);
+        if (r >= 0)
+          return bus = r;
+      }
       return bus;                                // open bus: nothing drives it
   }
 }
@@ -279,7 +302,7 @@ void (*nesTraceRead)(Nes & nes, uint16_t addr, uint8_t value);
 NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 {
 #ifdef NES_TRACE
-  if (nesTraceWrite && addr < 0x4020)
+  if (nesTraceWrite && (addr < 0x4020 || (addr >= 0x5000 && addr < 0x6000)))
     nesTraceWrite(*this, addr, value);
 #endif
   if (addr < 0x4000) {
@@ -294,6 +317,11 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 
   if (addr >= 0x6000) {
     prgRam[addr & 0x1fff] = value;
+    return;
+  }
+
+  if (addr >= 0x4020) {
+    m_mapper->writeLow(addr, value);
     return;
   }
 
@@ -424,6 +452,10 @@ NES_HOT void Nes::runFrame(bool draw)
       }
     }
     int hitX = ppu.evaluateLine(y);
+    if (NES_UNLIKELY(m_mapper->wantsLineStart) && ppu.renderingEnabled()) {
+      runCpu(cycleAt(y, 4));
+      m_mapper->lineStart(y);
+    }
     // the flag rises about two dots after the pixel goes out
     if (hitX >= 0 && ppu.spr0HitCycle == INT32_MAX)
       ppu.spr0HitCycle = cycleAt(y, hitX + 2);
@@ -468,6 +500,8 @@ NES_HOT void Nes::runFrame(bool draw)
     profWait = nesClock() - t0;
   }
   ppu.setVBlank();
+  if (m_mapper->wantsLineStart)
+    m_mapper->vblank();
 
   // vblank, a line at a time so the APU (frame IRQ, DMC) keeps up
   int lines = m_linesPerFrame + extra;

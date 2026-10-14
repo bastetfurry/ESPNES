@@ -172,6 +172,7 @@ NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
   m_openBusFrame = m_nes->frameCount;
   switch (addr & 7) {
     case 0: {
+      m_nes->mapperPpuCtrl(value);
       bool wasEnabled = m_ctrl & 0x80;
       // the NMI line is "vblank AND enabled": turned off within a cycle of the edge, the CPU's
       // edge detector never sees it
@@ -365,6 +366,7 @@ void Ppu::captureLine(LineState & s) const
   s.evalStart = m_evalStart;
   memcpy(s.palette, palette, sizeof(palette));
   memcpy(s.chrMap, chrMap, sizeof(chrMap));
+  memcpy(s.sprChrMap, sprChrMap, sizeof(sprChrMap));
   memcpy(s.ntMap, ntMap, sizeof(ntMap));
 }
 
@@ -409,7 +411,7 @@ NES_HOT int Ppu::evaluateLine(int y)
   uint8_t tile = found[0][1], attr = found[0][2];
   int sx = found[0][3];
   uint16_t pa = spritePatternAddr(m_ctrl, tile, attr, row);
-  uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
+  uint8_t const * chr = sprChrMap[pa >> 10] + (pa & 0x3ff);
   uint8_t bits = chr[0] | chr[8];
   if (attr & 0x40)
     bits = s_reverse[bits];
@@ -509,7 +511,7 @@ void Ppu::drawLine(LineState const & st, int y, uint8_t * out, uint8_t const * c
     uint8_t attr = s[2];
     int sx = s[3];
     uint16_t pa = spritePatternAddr(st.ctrl, s[1], attr, row);
-    uint8_t const * chr = st.chrMap[pa >> 10] + (pa & 0x3ff);
+    uint8_t const * chr = st.sprChrMap[pa >> 10] + (pa & 0x3ff);
     uint8_t lo = chr[0], hi = chr[8];
     if (attr & 0x40) {
       lo = s_reverse[lo];

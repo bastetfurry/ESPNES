@@ -13,7 +13,10 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
   resets to 0 every line), re-aligns a misaligned address, and has the overflow flag bug.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
 - **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM), 4 (MMC3, with its scanline
-  IRQ), 7 (AxROM, with AOROM bus conflicts), 71 (Camerica/Codemasters, with Fire Hawk's mirroring). The cartridge layer works through bank pointer tables, so a
+  IRQ), 5 (MMC5: all PRG/CHR modes, separate sprite/background CHR sets for 8x16 sprites, ExRAM
+  as nametable, fill mode, scanline IRQ, multiplier; not its extended attributes, split screen or
+  sound), 7 (AxROM, with AOROM bus conflicts), 71 (Camerica/Codemasters, with Fire Hawk's
+  mirroring). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the

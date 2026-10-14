@@ -11,9 +11,20 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. ROMs live in the SPI
   hit is timed to the dot, 8 sprites per line, 8x16 sprites, left column clipping, greyscale.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
 - **Mappers:** 0 (NROM). The cartridge layer works through bank pointer tables, ready for MMCs.
-- **Not yet:** sound (APU registers are stored, not played), colour emphasis, PPU open bus decay.
+- **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
+  its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the
+  DAC (GPIO 25); each sample averages the channels over its time span, so high notes do not alias
+  much. DMC DMA cycle stealing is not emulated.
+- **Not yet:** colour emphasis, PPU open bus decay.
 
-Super Mario Bros. runs at full speed with no frame skipping, using ~7.5 ms of the 16.6 ms frame.
+Super Mario Bros. runs at full speed with no frame skipping, using ~8.8 ms of the 16.6 ms frame.
+
+## Sound
+
+The APU runs on core 1 with the CPU, lazily: it catches up whenever an APU register is touched and
+once per scanline. Its samples go through a ring buffer to FabGL's SoundGenerator, which feeds the
+DAC from an I2S interrupt. The emulation is paced by a timer and the DAC by the I2S clock, so the
+APU's sample rate is nudged by up to 0.5% to keep about three frames buffered. F2/F3 set the volume.
 
 ## Cores
 
@@ -47,11 +58,11 @@ are emulated at 50 frames per second on the 60 Hz signal.
 | Select | Shift             |
 | Start  | Space             |
 
-Esc goes back to the ROM list, F1 resets. In the list, Left/Right picks the TV system
+Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM and `q` leaves the game. Frame timings are printed every 5 seconds.
+that ROM, `s` taps Start and `q` leaves the game. Frame timings are printed every 5 seconds.
 
 ## Build & flash
 
@@ -68,7 +79,7 @@ SPIFFS has no directories and names are limited to 31 characters, so keep ROM fi
 - `src/nes/` the emulator core, plain C++ without ESP32 dependencies
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
 - `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
-  thread like the ESP32 build), a benchmark
+  thread like the ESP32 build), sound to WAV (`wav=file.wav`), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
 - `roms/` packed into SPIFFS by `uploadfs`
 - `testroms/` test ROMs for the host harness (nestest)

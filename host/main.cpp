@@ -1,10 +1,11 @@
 // PC test harness for the emulator core (src/nes). Not part of the ESP32 build.
 //
 //   nestest <nestest.nes> <nestest.log>   run nestest's automated mode, compare with the golden log
-//   run <rom.nes> <frames> <out.ppm> [pal] [async] [hold=BUTTONS@FROM-TO ...]
+//   run <rom.nes> <frames> <out.ppm> [pal] [async] [wav=out.wav] [hold=BUTTONS@FROM-TO ...]
 //                                         run frames and write the last one as PPM; BUTTONS is
 //                                         a string of A B s(elect) S(tart) U D L R; async draws
-//                                         on a second thread, as the ESP32 build does on core 0
+//                                         on a second thread, as the ESP32 build does on core 0;
+//                                         wav writes the sound (22050 Hz mono 16 bit)
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -92,6 +93,20 @@ static void setupVideo(Nes & nes)
 }
 
 
+static void writeWav(char const * path, std::vector<int16_t> const & samples, int rate)
+{
+  FILE * f = fopen(path, "wb");
+  auto u32 = [&](uint32_t v) { fwrite(&v, 4, 1, f); };
+  auto u16 = [&](uint16_t v) { fwrite(&v, 2, 1, f); };
+  uint32_t bytes = samples.size() * 2;
+  fwrite("RIFF", 1, 4, f); u32(36 + bytes); fwrite("WAVEfmt ", 1, 8, f);
+  u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+  fwrite("data", 1, 4, f); u32(bytes);
+  fwrite(samples.data(), 2, samples.size(), f);
+  fclose(f);
+}
+
+
 struct Hold { uint8_t buttons; int from, to; };
 
 static std::atomic<int> s_kicks(0);
@@ -131,11 +146,15 @@ static int run(int argc, char ** argv)
   }
   std::vector<Hold> holds;
   bool async = false;
+  char const * wavPath = nullptr;
+  std::vector<int16_t> audio;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
     else if (!strcmp(argv[i], "async"))
       async = true;
+    else if (!strncmp(argv[i], "wav=", 4))
+      wavPath = argv[i] + 4;
     else if (!strncmp(argv[i], "hold=", 5)) {
       Hold h;
       h.buttons = parseButtons(argv[i] + 5);
@@ -165,6 +184,8 @@ static int run(int argc, char ** argv)
         b |= h.buttons;
     nes.setButtons(0, b);
     nes.runFrame(true);
+    audio.insert(audio.end(), nes.apu.samples(), nes.apu.samples() + nes.apu.sampleCount());
+    nes.apu.takeSamples();
     if (nes.cpu.jammed) {
       printf("CPU jammed at $%04X in frame %d\n", nes.cpu.PC, f);
       break;
@@ -173,6 +194,8 @@ static int run(int argc, char ** argv)
   running = false;
   if (worker.joinable())
     worker.join();
+  if (wavPath)
+    writeWav(wavPath, audio, 22050);
   FILE * f = fopen(outPath, "wb");
   fprintf(f, "P6\n256 240\n255\n");
   for (int y = 0; y < 240; ++y)

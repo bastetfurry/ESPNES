@@ -7,6 +7,7 @@
 #include "cart.h"
 #include "cpu.h"
 #include "ppu.h"
+#include "apu.h"
 
 // controller bits, in the order the shift register reports them
 enum : uint8_t {
@@ -69,6 +70,7 @@ public:
 
   Cpu             cpu;
   Ppu             ppu;
+  Apu             apu;
   uint8_t         ram[2048];
   uint8_t const * prgMap[4];      // 8 KB pages at $8000, $A000, $C000, $E000
   uint8_t *       prgRam;         // 8 KB at $6000
@@ -101,7 +103,6 @@ private:
   uint8_t    m_buttons[2];
   uint8_t    m_shift[2];
   bool       m_strobe;
-  uint8_t    m_apuRegs[0x18];    // stored, not yet played
 
   uint8_t * const * m_lines;
   uint8_t const *   m_colorMap;

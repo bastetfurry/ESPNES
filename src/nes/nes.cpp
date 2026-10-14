@@ -21,6 +21,7 @@ Nes::Nes()
 {
   cpu.init(this);
   ppu.init(this);
+  apu.init(this);
   profWait = profDraw = 0;
   m_buttons[0] = m_buttons[1] = 0;
   m_shift[0] = m_shift[1] = 0;
@@ -87,9 +88,9 @@ void Nes::powerOn()
   memset(prgRam, 0, 0x2000);
   if (m_chrRam)
     memset(m_chrRam, 0, 0x2000);
-  memset(m_apuRegs, 0, sizeof(m_apuRegs));
   m_strobe = false;
   ppu.reset();
+  apu.reset(m_region);
   m_mapper->reset();
   m_baseUnits = 0;
   cpu.cycles  = 0;
@@ -142,7 +143,8 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
 
   switch (addr) {
     case 0x4015:
-      return 0;                                  // APU status: no channel playing, no IRQ
+      apu.run(cpu.cycles);
+      return apu.readStatus();
     case 0x4016:
     case 0x4017: {
       int port = addr & 1;
@@ -199,8 +201,10 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
     return;
   }
 
-  if (addr < 0x4018)
-    m_apuRegs[addr - 0x4000] = value;
+  if (addr < 0x4018) {
+    apu.run(cpu.cycles);
+    apu.write(addr, value);
+  }
 }
 
 
@@ -248,6 +252,7 @@ NES_HOT void Nes::runFrame(bool draw)
     ppu.endOfLine();
     if (ppu.renderingEnabled())
       m_mapper->hblank();
+    apu.run(cpu.cycles);
   }
 
   // line 240 is idle, vblank starts at line 241 dot 1
@@ -260,8 +265,14 @@ NES_HOT void Nes::runFrame(bool draw)
   }
   ppu.setVBlank();
 
-  // pre-render line: the last of the frame
+  // vblank, a line at a time so the APU (frame IRQ, DMC) keeps up
   int pre = m_linesPerFrame - 1;
+  for (int y = 242; y <= pre; ++y) {
+    cpu.run(cycleAt(y, 0));
+    apu.run(cpu.cycles);
+  }
+
+  // pre-render line: the last of the frame
   cpu.run(cycleAt(pre, 1));
   ppu.startFrame();
   cpu.run(cycleAt(pre, 256));
@@ -270,10 +281,12 @@ NES_HOT void Nes::runFrame(bool draw)
   if (ppu.renderingEnabled())
     m_mapper->hblank();
   cpu.run(cycleAt(m_linesPerFrame, 0));
+  apu.run(cpu.cycles);
 
   // rebase the cycle counter to the start of the next frame
   int32_t frameUnits = m_linesPerFrame * UNITS_PER_LINE;
   int32_t c = (frameUnits - m_baseUnits) / m_unitsPerCycle;
   cpu.cycles -= c;
+  apu.rebase(c);
   m_baseUnits += c * m_unitsPerCycle - frameUnits;
 }

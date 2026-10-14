@@ -4,17 +4,23 @@
 // VGAController sends the frame buffer by DMA straight from its line buffers, and the PPU writes
 // its finished lines into those buffers as raw VGA pixels, so the picture costs no interrupt time.
 //
-// Cores: the CPU and the PPU's timing run in the Arduino loop task on core 1; the lines are drawn
-// by a task on core 0 from per-line snapshots (see Nes::setRenderKick).
+// Cores: the CPU, the PPU's timing and the APU run in the Arduino loop task on core 1; the lines
+// are drawn by a task on core 0 from per-line snapshots (see Nes::setRenderKick).
+//
+// Sound: the APU's samples go through a ring buffer to FabGL's SoundGenerator, which feeds the
+// DAC on GPIO 25 from an I2S interrupt (on core 0). The emulation is paced by a timer and the DAC
+// by the I2S clock, so their rates drift apart a little: the APU's sample rate is nudged by the
+// buffer's fill level to keep it from running dry or overflowing.
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start,
-//       Esc = back to the ROM list, F1 = reset.
-// Serial console: a number starts that ROM from the list, 'q' leaves the game.
+//       Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up.
+// Serial console: a number starts that ROM from the list, 'q' leaves the game, 's' taps Start.
 
 #include <Arduino.h>
 #include <SPIFFS.h>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 
 #include "fabgl.h"
 #include "esp_timer.h"
@@ -69,6 +75,71 @@ static void initVideo()
   // so core 0's idle task still runs and its watchdog stays quiet.
   xTaskCreatePinnedToCore(renderTask, "render", 3072, nullptr, 2, &s_renderTask, 0);
   nes.setRenderKick(kickRenderer, nullptr);
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// sound
+
+static constexpr int      AUDIO_RATE = 22050;
+static constexpr uint32_t RING_SIZE  = 4096;               // power of two
+static int8_t             s_ring[RING_SIZE];
+static std::atomic<uint32_t> s_ringHead(0);                // written by core 1
+static std::atomic<uint32_t> s_ringTail(0);                // written by the sound interrupt
+static int8_t             s_lastSample;
+static int                s_volume = 3;                    // 0-8
+
+// FabGL calls getSample() from its I2S interrupt for every DAC sample
+class ApuStream : public fabgl::WaveformGenerator {
+public:
+  void setFrequency(int value) override { }
+  int  getSample() override;
+};
+
+int IRAM_ATTR ApuStream::getSample()
+{
+  uint32_t tail = s_ringTail.load(std::memory_order_relaxed);
+  if (tail != s_ringHead.load(std::memory_order_acquire)) {
+    s_lastSample = s_ring[tail & (RING_SIZE - 1)];
+    s_ringTail.store(tail + 1, std::memory_order_release);
+  }
+  // when the buffer runs dry, hold the last level: that is silent, a jump to 0 would click
+  return s_lastSample;
+}
+
+static fabgl::SoundGenerator * s_soundGen;
+static ApuStream               s_apuStream;
+
+static void initSound()
+{
+  s_soundGen = new fabgl::SoundGenerator(AUDIO_RATE, GPIO_NUM_25, fabgl::SoundGenMethod::DAC);
+  s_soundGen->setVolume(127);
+  s_soundGen->attach(&s_apuStream);
+  s_apuStream.setVolume(127);
+  s_apuStream.enable(true);
+  s_soundGen->play(true);
+}
+
+static uint32_t ringFill()
+{
+  return s_ringHead.load(std::memory_order_relaxed) - s_ringTail.load(std::memory_order_acquire);
+}
+
+// Moves the frame's samples to the ring, scaled to the DAC's 8 bits.
+static void pushSamples()
+{
+  int n = nes.apu.sampleCount();
+  int16_t const * src = nes.apu.samples();
+  uint32_t head = s_ringHead.load(std::memory_order_relaxed);
+  uint32_t space = RING_SIZE - ringFill();
+  if ((uint32_t) n > space)
+    n = space;                                             // overflow: drop the rest
+  for (int i = 0; i < n; ++i) {
+    int v = (src[i] * s_volume) >> 8;
+    s_ring[(head + i) & (RING_SIZE - 1)] = v > 127 ? 127 : (v < -127 ? -127 : v);
+  }
+  s_ringHead.store(head + n, std::memory_order_release);
+  nes.apu.takeSamples();
 }
 
 
@@ -151,7 +222,7 @@ static void drawMenu(int selected, int top, int visible, char const * message)
   }
   cv.setPenColor(Color::BrightBlack);
   cv.drawText(4, 222, "Up/Down Enter:start  L/R:TV");
-  cv.drawText(4, 231, "In game: Esc=list F1=reset");
+  cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
   cv.waitCompletion();
 }
 
@@ -288,6 +359,14 @@ static void runGame()
   const int64_t period = nes.region() == Region::PAL ? 19997 : 16639;
   const int maxSkip = 3;
 
+  // the DAC's real rate (the I2S clock divider cannot hit every rate exactly)
+  const int audioRate = s_apuStream.sampleRate() ? s_apuStream.sampleRate() : AUDIO_RATE;
+  const uint32_t audioTarget = audioRate * 3 / nes.frameRate();
+  nes.apu.setSampleRate(audioRate);
+  uint32_t minFill = RING_SIZE;
+
+  int serialStart = 0;
+
   int64_t next = esp_timer_get_time();
   int skipped = 0;
   bool draw = true;
@@ -308,10 +387,22 @@ static void runGame()
         return;
       if (vk == fabgl::VK_F1)
         nes.powerOn();
+      if (vk == fabgl::VK_F2 || vk == fabgl::VK_F3) {
+        s_volume = std::max(0, std::min(8, s_volume + (vk == fabgl::VK_F3 ? 1 : -1)));
+        Serial.printf("Volume %d/8\n", s_volume);
+      }
     }
-    if (Serial.available() && Serial.read() == 'q')
-      return;
-    nes.setButtons(0, readPad(kb));
+    // serial console: 'q' leaves, 's' taps Start (for testing without a keyboard)
+    if (Serial.available()) {
+      int c = Serial.read();
+      if (c == 'q')
+        return;
+      if (c == 's')
+        serialStart = 10;
+    }
+    nes.setButtons(0, readPad(kb) | (serialStart ? BTN_START : 0));
+    if (serialStart)
+      --serialStart;
 
     int64_t t0 = esp_timer_get_time();
     nes.runFrame(draw);
@@ -324,6 +415,13 @@ static void runGame()
     worst = std::max(worst, t1 - t0);
     ++frames;
     drawn += draw;
+
+    // keep about three frames of sound buffered, by producing slightly more or fewer samples
+    pushSamples();
+    int32_t error = (int32_t) audioTarget - (int32_t) ringFill();
+    float adjust = 1.0f + 0.005f * std::max(-1.0f, std::min(1.0f, (float) error / audioTarget));
+    nes.apu.setSampleRate(audioRate, adjust);
+    minFill = std::min(minFill, ringFill());
 
     if (nes.cpu.jammed) {
       Serial.printf("CPU jammed at $%04X\n", nes.cpu.PC);
@@ -353,6 +451,8 @@ static void runGame()
       Serial.printf("%.1f fps (%.1f drawn), emulation %lld us/frame avg, %lld worst (budget %lld)\n",
                     frames * 1e6 / (now - statStart), drawn * 1e6 / (now - statStart),
                     busy / frames, worst, period);
+      Serial.printf("  sound buffer %u samples, lowest %u (target %u)\n", (unsigned) ringFill(), (unsigned) minFill, (unsigned) audioTarget);
+      minFill = RING_SIZE;
       if (drawn)
         Serial.printf("  core 0 drawing %llu us/frame, core 1 waiting for it %llu us/frame\n",
                       drawCycles / drawn / 240, waitCycles / drawn / 240);
@@ -378,6 +478,7 @@ void setup()
 
   PS2.begin(PS2Preset::KeyboardPort0, KbdMode::CreateVirtualKeysQueue);
   initVideo();
+  initSound();
   s_canvas = new fabgl::Canvas(&VGA);
   s_canvas->selectFont(&fabgl::FONT_8x8);
   s_canvas->setGlyphOptions(GlyphOptions().FillBackground(true));

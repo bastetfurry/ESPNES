@@ -8,3 +8,6 @@ roms/*.nes
 src/generated/
 tools/psramtest/
 __pycache__/
+resume.sh
+# local test ROMs: not built in, not in git (see README)
+roms-test/

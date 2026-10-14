@@ -213,4 +213,7 @@ The 512 KB SPIFFS partition is formatted on the first boot and holds the save ga
   nametables as text (`ntdump`), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
 - `roms/` built into the firmware by `tools/embed_roms.py`
-- `testroms/` test ROMs for the host harness (nestest)
+- `testroms/` test ROMs for the host harness (nestest, AccuracyCoin)
+- `roms-test/` local ROMs for testing with the host harness, not built in and not in git
+  (Battletoads and Fire Hawk were checked from there: mappers 7 and 71 work, Battletoads' second
+  stage scrolls correctly, Fire Hawk's DMC-IRQ panel is stable)

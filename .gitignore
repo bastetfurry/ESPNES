@@ -7,3 +7,4 @@ roms/*.nes
 *.wav
 src/generated/
 tools/psramtest/
+__pycache__/

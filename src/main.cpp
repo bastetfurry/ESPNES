@@ -13,7 +13,8 @@
 // buffer's fill level to keep it from running dry or overflowing.
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start,
-//       Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up.
+//       Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off.
+// In the ROM list, G edits the selected game's Game Genie / Action Replay codes.
 // Serial console: a number starts that ROM from the list, 'q' leaves the game, and
 // a b e s u d l r tap A, B, sElect, Start and the directions.
 
@@ -39,6 +40,8 @@ static Nes                    nes;
 static uint8_t                s_raw[64];        // NES colour -> raw VGA pixel (RGB222 + sync bits)
 static uint8_t *              s_lines[240];     // the frame buffer's line pointers
 
+
+static void overlayHook(void *, int y, uint8_t * line);
 
 static TaskHandle_t s_renderTask;
 
@@ -78,6 +81,7 @@ static void initVideo()
   // so core 0's idle task still runs and its watchdog stays quiet.
   xTaskCreatePinnedToCore(renderTask, "render", 3072, nullptr, 2, &s_renderTask, 0);
   nes.setRenderKick(kickRenderer, nullptr);
+  nes.setLineHook(overlayHook, nullptr);
 }
 
 
@@ -164,6 +168,9 @@ static void listRoms()
 
 
 static fabgl::Canvas * s_canvas;
+
+static String savePathFor(RomBlob const & rom, char const * ext = ".sav");
+static void   editCheats(RomBlob const & rom);
 
 // menu layout: the list on the left, a PICTURE_SIZE square picture on the right
 static constexpr int LIST_Y = 20;
@@ -256,8 +263,8 @@ static void drawMenu(int selected, int top, int visible, char const * message)
     }
     drawMessage(message);
     cv.setPenColor(Color::BrightBlack);
-    cv.drawText(4, 222, "Enter:play L/R:TV M/Tab:manual");
-    cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
+    cv.drawText(4, 222, "Enter:play L/R:TV M:man G:codes");
+    cv.drawText(4, 231, "Esc F1=reset F2/3=vol F10=cheat");
   } else {
     if (moved) {
       drawRow(s_shown.selected, top, false);
@@ -421,16 +428,22 @@ static int chooseRom(char const * message)
       // over serial: a number starts that game, m and a number shows its manual
       if (Serial.available()) {
         int c = Serial.peek();
-        if (c != 'm' && !isdigit(c)) {
+        if (c != 'm' && c != 'g' && !isdigit(c)) {
           Serial.read();          // stray characters (line ends) would read as game 0
           continue;
         }
-        bool manual = c == 'm';
-        if (manual)
+        bool manual = c == 'm', codes = c == 'g';
+        if (manual || codes)
           Serial.read();
         int idx = Serial.parseInt();
         if (idx >= 0 && idx < n) {
           selected = idx;
+          if (codes) {
+            editCheats(g_roms[idx]);
+            s_shown.valid = false;
+            vk = fabgl::VK_NONE;
+            break;
+          }
           if (!manual)
             return idx;
           if (g_roms[idx].manual) {
@@ -450,6 +463,12 @@ static int chooseRom(char const * message)
       continue;
     message = nullptr;
     switch (vk) {
+      case fabgl::VK_g: case fabgl::VK_G:
+        if (n) {
+          editCheats(g_roms[selected]);
+          s_shown.valid = false;
+        }
+        break;
       case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
         if (n && g_roms[selected].manual) {
           showManual(g_roms[selected]);
@@ -475,6 +494,231 @@ static int chooseRom(char const * message)
         break;
     }
   }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// cheat codes: a text file per game next to the saves, one code per line as typed
+
+static void loadCheatCodes(RomBlob const & rom, std::vector<String> & codes)
+{
+  codes.clear();
+  String path = savePathFor(rom, ".cht");
+  if (!SPIFFS.exists(path))
+    return;
+  File f = SPIFFS.open(path, "r");
+  while (f && f.available() && (int) codes.size() < Nes::MAX_CHEATS) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    Cheat c;
+    if (line.length() && decodeCheat(line.c_str(), &c))
+      codes.push_back(line);
+  }
+}
+
+
+static void storeCheatCodes(RomBlob const & rom, std::vector<String> const & codes)
+{
+  String path = savePathFor(rom, ".cht");
+  if (codes.empty()) {
+    if (SPIFFS.exists(path))
+      SPIFFS.remove(path);
+    return;
+  }
+  s_soundGen->play(false);          // flash writes stop the cache, and the sound interrupt with it
+  File f = SPIFFS.open(path, "w");
+  for (auto const & c : codes)
+    f.print(c + "\n");
+  f.close();
+  s_soundGen->play(true);
+}
+
+
+// The code editor: type a code and Enter to add it, Up/Down to select, Del to remove the
+// selected one, Esc to save and go back. Over serial: characters type, Enter adds, ! removes the
+// selected code, ~ leaves.
+static void editCheats(RomBlob const & rom)
+{
+  std::vector<String> codes, before;
+  loadCheatCodes(rom, codes);
+  before = codes;
+
+  fabgl::Canvas & cv = *s_canvas;
+  auto kb = PS2.keyboard();
+  String input;
+  int selected = 0;
+  char const * message = nullptr;
+  bool redrawList = true;
+
+  cv.setBrushColor(Color::Black);
+  cv.clear();
+  cv.setPenColor(Color::BrightYellow);
+  String title = rom.title;
+  if (title.length() > 24)
+    title = title.substring(0, 24);
+  cv.drawText(0, 4, "CODES");
+  cv.setPenColor(Color::BrightCyan);
+  cv.drawText(56, 4, title.c_str());
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 214, "Game Genie, or Action Replay");
+  cv.drawText(0, 222, "AAAA:VV. Enter:add Del:remove");
+  cv.drawText(0, 231, "Up/Down:select Esc:save+back");
+
+  for (;;) {
+    if (redrawList) {
+      // the codes with what they decode to, each line padded so no clearing is needed
+      for (int i = 0; i < Nes::MAX_CHEATS; ++i) {
+        char line[40] = "";
+        if (i < (int) codes.size()) {
+          Cheat c;
+          decodeCheat(codes[i].c_str(), &c);
+          char what[20];
+          if (c.rom && c.compare >= 0)
+            snprintf(what, sizeof(what), "GG %04X=%02X?%02X", c.addr, c.value, c.compare);
+          else
+            snprintf(what, sizeof(what), "%s %04X=%02X", c.rom ? "GG" : "AR", c.addr, c.value);
+          snprintf(line, sizeof(line), "%-12s %s", codes[i].c_str(), what);
+        }
+        char padded[33];
+        snprintf(padded, sizeof(padded), "%-32s", line);
+        bool sel = i == selected && i < (int) codes.size();
+        cv.setBrushColor(sel ? Color::Blue : Color::Black);
+        cv.setPenColor(sel ? Color::BrightWhite : Color::White);
+        cv.drawText(0, 20 + i * 9, padded);
+      }
+      cv.setBrushColor(Color::Black);
+      redrawList = false;
+    }
+    char line[33];
+    snprintf(line, sizeof(line), "> %-29s", (input + "_").c_str());
+    cv.setPenColor(Color::BrightWhite);
+    cv.drawText(0, 178, line);
+    snprintf(line, sizeof(line), "%-32s", message ? message : "");
+    cv.setPenColor(Color::BrightRed);
+    cv.drawText(0, 192, line);
+    cv.waitCompletion();
+
+    // one key, from the keyboard or the serial console
+    int ch = 0;
+    fabgl::VirtualKey vk = fabgl::VK_NONE;
+    while (!ch && vk == fabgl::VK_NONE) {
+      if (Serial.available()) {
+        int c = Serial.read();
+        if (c == '~')
+          vk = fabgl::VK_ESCAPE;
+        else if (c == '!')
+          vk = fabgl::VK_DELETE;
+        else if (c == '\n' || c == '\r')
+          vk = fabgl::VK_RETURN;
+        else if (isprint(c))
+          ch = c;
+        continue;
+      }
+      if (!kb->virtualKeyAvailable()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+      bool down;
+      auto k = kb->getNextVirtualKey(&down, 0);
+      if (!down)
+        continue;
+      int a = kb->virtualKeyToASCII(k);
+      if (a >= 32 && a < 127 && k != fabgl::VK_DELETE)
+        ch = a;
+      else
+        vk = k;
+    }
+    message = nullptr;
+
+    if (ch) {
+      if ((isalnum(ch) || ch == ':' || ch == '-') && input.length() < 12)
+        input += (char) toupper(ch);
+      continue;
+    }
+    switch (vk) {
+      case fabgl::VK_ESCAPE:
+        if (codes != before)
+          storeCheatCodes(rom, codes);
+        return;
+      case fabgl::VK_BACKSPACE:
+        if (input.length())
+          input.remove(input.length() - 1);
+        break;
+      case fabgl::VK_RETURN: case fabgl::VK_KP_ENTER: {
+        Cheat c;
+        if (!input.length())
+          break;
+        if (!decodeCheat(input.c_str(), &c)) {
+          message = "Not a valid code";
+        } else if ((int) codes.size() >= Nes::MAX_CHEATS) {
+          message = "The list is full";
+        } else {
+          char canon[24];
+          formatCheat(c, input.c_str(), canon, sizeof(canon));
+          codes.push_back(canon);
+          selected = codes.size() - 1;
+          input = "";
+          redrawList = true;
+        }
+        break;
+      }
+      case fabgl::VK_DELETE: case fabgl::VK_KP_DELETE:
+        if (selected < (int) codes.size()) {
+          codes.erase(codes.begin() + selected);
+          selected = std::max(0, std::min(selected, (int) codes.size() - 1));
+          redrawList = true;
+        }
+        break;
+      case fabgl::VK_UP: case fabgl::VK_KP_UP:
+        if (selected > 0) {
+          --selected;
+          redrawList = true;
+        }
+        break;
+      case fabgl::VK_DOWN: case fabgl::VK_KP_DOWN:
+        if (selected + 1 < (int) codes.size()) {
+          ++selected;
+          redrawList = true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// a short message over the game picture ("CHEATS ON"), drawn into each line by the core that
+// draws them, so it does not flicker
+
+static char         s_overlayText[24];
+static volatile int s_overlayFrames;
+
+static void overlayHook(void *, int y, uint8_t * line)
+{
+  if (!s_overlayFrames || y < 8 || y >= 18)
+    return;
+  int len = strlen(s_overlayText);
+  uint8_t fg = s_raw[0x30], bg = s_raw[0x0f];
+  int row = y - 9;                              // a black box from line 8 to 17, text in 9-16
+  for (int x = 6; x < 10 + len * 8 && x < 256; ++x) {
+    uint8_t px = bg;
+    if (row >= 0 && row < 8 && x >= 8 && x < 8 + len * 8) {
+      uint8_t ch = s_overlayText[(x - 8) >> 3];
+      uint8_t bits = fabgl::FONT_8x8.data[ch * 8 + row];
+      if (bits & (0x80 >> ((x - 8) & 7)))
+        px = fg;
+    }
+    line[x ^ 2] = px;                           // the DMA's byte order
+  }
+}
+
+
+static void showOverlay(char const * text)
+{
+  strncpy(s_overlayText, text, sizeof(s_overlayText) - 1);
+  s_overlayFrames = 90;
 }
 
 
@@ -565,7 +809,7 @@ static uint32_t hashSaveRam()
 
 // SPIFFS names are at most 31 characters: a readable start of the ROM's name, then the CRC32 of
 // its contents, so a renamed ROM keeps its save
-static String savePathFor(RomBlob const & rom)
+static String savePathFor(RomBlob const & rom, char const * ext)
 {
   String stem;
   for (char const * p = rom.name; *p && stem.length() < 14; ++p) {
@@ -576,7 +820,7 @@ static String savePathFor(RomBlob const & rom)
   }
   char crc[10];
   snprintf(crc, sizeof(crc), "_%08x", (unsigned) crc32_le(0, rom.data, rom.size));
-  return "/" + stem + crc + ".sav";
+  return "/" + stem + crc + ext;
 }
 
 
@@ -634,6 +878,18 @@ static char const * loadRom(RomBlob const & rom)
     loadSave();
 
   nes.setOverclock(cfg.overclock);
+
+  std::vector<String> codes;
+  loadCheatCodes(rom, codes);
+  Cheat cheats[Nes::MAX_CHEATS];
+  int cheatCount = 0;
+  for (auto const & c : codes)
+    if (decodeCheat(c.c_str(), &cheats[cheatCount]))
+      ++cheatCount;
+  nes.setCheats(cheats, cheatCount);
+  nes.enableCheats(cheatCount > 0);
+  if (cheatCount)
+    Serial.printf("%d cheat code(s) on\n", cheatCount);
   nes.powerOn();
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
@@ -659,6 +915,18 @@ static uint8_t readPad(fabgl::Keyboard * kb)
   if ((b & (BTN_UP | BTN_DOWN)) == (BTN_UP | BTN_DOWN))       b &= ~(BTN_UP | BTN_DOWN);
   if ((b & (BTN_LEFT | BTN_RIGHT)) == (BTN_LEFT | BTN_RIGHT)) b &= ~(BTN_LEFT | BTN_RIGHT);
   return b;
+}
+
+
+static void toggleCheats()
+{
+  if (!nes.cheatCount()) {
+    showOverlay("NO CODES");
+    return;
+  }
+  nes.enableCheats(!nes.cheatsEnabled());
+  showOverlay(nes.cheatsEnabled() ? "CHEATS ON" : "CHEATS OFF");
+  Serial.println(nes.cheatsEnabled() ? "Cheats on" : "Cheats off");
 }
 
 
@@ -701,6 +969,8 @@ static void runGame()
         return;
       if (vk == fabgl::VK_F1)
         nes.powerOn();
+      if (vk == fabgl::VK_F10)
+        toggleCheats();
       if (vk == fabgl::VK_F2 || vk == fabgl::VK_F3) {
         s_volume = std::max(0, std::min(8, s_volume + (vk == fabgl::VK_F3 ? 1 : -1)));
         Serial.printf("Volume %d/8\n", s_volume);
@@ -712,6 +982,8 @@ static void runGame()
       int c = Serial.read();
       if (c == 'q')
         return;
+      if (c == 'c')
+        toggleCheats();
       static char const keys[] = "abesudlr";
       if (char const * k = strchr(keys, c)) {
         serialButtons = 1 << (k - keys);
@@ -723,6 +995,8 @@ static void runGame()
       --serialFrames;
 
     int64_t t0 = esp_timer_get_time();
+    if (s_overlayFrames)
+      --s_overlayFrames;
     nes.runFrame(draw);
     int64_t t1 = esp_timer_get_time();
     if (draw) {

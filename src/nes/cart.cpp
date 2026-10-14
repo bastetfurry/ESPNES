@@ -14,10 +14,12 @@ char const * parseRom(uint8_t const * data, size_t size, Cart * cart)
 
   info.nes20 = (f7 & 0x0c) == 0x08;
   info.mapper = (f6 >> 4) | (f7 & 0xf0);
+  info.submapper = 0;
 
   int prgUnits = data[4], chrUnits = data[5];
   if (info.nes20) {
     info.mapper |= (data[8] & 0x0f) << 8;
+    info.submapper = data[8] >> 4;
     // exponent-multiplier sizes (nibble 0xF) are for odd homebrew sizes; not supported
     if ((data[9] & 0x0f) == 0x0f || (data[9] & 0xf0) == 0xf0)
       return "Unsupported NES 2.0 ROM size";
@@ -339,6 +341,88 @@ private:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 7: AxROM (Battletoads, Marble Madness, Rare's games). One register anywhere in
+// $8000-$FFFF: bits 0-2 select a 32 KB PRG bank, bit 4 the single-screen nametable. 8 KB CHR RAM.
+// AOROM boards (NES 2.0 submapper 2) have bus conflicts: the ROM drives the bus at the same time,
+// so the value written is ANDed with the ROM byte at that address.
+
+class MapperAxROM : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    m_banks = m_nes.cart().info.prgSize / 0x8000;
+    m_busConflicts = m_nes.cart().info.submapper == 2;
+    select(0);
+    m_nes.mapChr8K(0);
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    if (m_busConflicts)
+      value &= m_nes.read(addr);
+    select(value);
+  }
+
+private:
+  void select(uint8_t value)
+  {
+    uint8_t const * p = m_nes.cart().prg + ((value & 7) % m_banks) * 0x8000;
+    for (int i = 0; i < 4; ++i)
+      m_nes.mapPrg8K(i, p + i * 0x2000);
+    m_nes.setMirroring((value & 0x10) ? Mirroring::SingleB : Mirroring::SingleA);
+  }
+
+  int  m_banks;
+  bool m_busConflicts;
+};
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 71: Camerica / Codemasters BF909x (Fire Hawk, Micro Machines, Bee 52, the Dizzy games).
+// $C000-$FFFF selects a 16 KB PRG bank at $8000, the last bank is fixed at $C000, 8 KB CHR RAM.
+// Fire Hawk's board (submapper 1) also has single-screen mirroring at $9000-$9FFF, bit 4.
+
+class MapperCamerica : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    Cart const & c = m_nes.cart();
+    m_banks = c.info.prgSize / 0x4000;
+    m_mirroringControl = c.info.submapper == 1;
+    select(0);
+    uint8_t const * last = c.prg + (m_banks - 1) * 0x4000;
+    m_nes.mapPrg8K(2, last);
+    m_nes.mapPrg8K(3, last + 0x2000);
+    m_nes.mapChr8K(0);
+    m_nes.setMirroring(m_mirroringControl ? Mirroring::SingleA : c.info.mirroring);
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    if (addr >= 0xc000)
+      select(value);
+    else if (m_mirroringControl && (addr & 0xf000) == 0x9000)
+      m_nes.setMirroring((value & 0x10) ? Mirroring::SingleB : Mirroring::SingleA);
+  }
+
+private:
+  void select(int bank)
+  {
+    uint8_t const * p = m_nes.cart().prg + (bank % m_banks) * 0x4000;
+    m_nes.mapPrg8K(0, p);
+    m_nes.mapPrg8K(1, p + 0x2000);
+  }
+
+  int  m_banks;
+  bool m_mirroringControl;
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
@@ -346,6 +430,8 @@ Mapper * createMapper(int number, Nes & nes)
     case 1:  return new MapperMMC1(nes);
     case 2:  return new MapperUxROM(nes);
     case 4:  return new MapperMMC3(nes);
+    case 7:  return new MapperAxROM(nes);
+    case 71: return new MapperCamerica(nes);
     default: return nullptr;
   }
 }
@@ -353,5 +439,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number <= 2 || number == 4;
+  return number <= 2 || number == 4 || number == 7 || number == 71;
 }

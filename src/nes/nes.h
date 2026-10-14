@@ -9,6 +9,7 @@
 #include "cpu.h"
 #include "ppu.h"
 #include "apu.h"
+#include "cheat.h"
 
 #ifdef NES_TRACE
 class Nes;
@@ -61,6 +62,10 @@ public:
     m_vgaOrder = vgaOrder;
   }
 
+  // Called for every drawn line after the PPU wrote it, on the core that draws (for overlays).
+  typedef void (*LineHook)(void * arg, int y, uint8_t * line);
+  void setLineHook(LineHook hook, void * arg)  { m_lineHook = hook; m_lineHookArg = arg; }
+
   // --- drawing on another core ---
   // Without a kick function, runFrame() draws each line itself. With one, runFrame() only
   // snapshots the PPU state per line and calls kick(arg) at the start of each drawn frame; the
@@ -92,9 +97,23 @@ public:
   // cpu.cycles is frame relative, so the absolute parity needs m_parityBase
   bool isGetCycle(int32_t cycle) const        { return !((cycle ^ m_parityBase) & 1); }
 
+  // --- cheats ---
+  // Game Genie codes patch what the CPU reads from ROM without slowing it down: an 8 KB page a
+  // code applies to is copied to RAM, patched, and mapped instead (see patchedPage). Action
+  // Replay codes are written to RAM at the start of every frame.
+  static constexpr int MAX_CHEATS = 16;
+  void setCheats(Cheat const * list, int count);
+  void enableCheats(bool on);
+  bool cheatsEnabled() const                  { return m_cheatsOn; }
+  int  cheatCount() const                     { return m_cheatCount; }
+
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }
-  void mapPrg8K(int slot, uint8_t const * p)  { prgMap[slot] = p; }
+  void mapPrg8K(int slot, uint8_t const * p)
+  {
+    m_prgSource[slot] = p;
+    prgMap[slot] = NES_UNLIKELY(m_romCheats) ? patchedPage(slot, p) : p;
+  }
   void mapChr1K(int slot, int bank);
   void mapChr8K(int bank);
   void setMirroring(Mirroring mirroring);
@@ -147,9 +166,23 @@ private:
   uint8_t    m_shift[2];
   bool       m_strobe;
 
+  uint8_t const * patchedPage(int slot, uint8_t const * page);
+  void            remapPrg();
+  void            freePatchedPages();
+
+  Cheat           m_cheats[MAX_CHEATS];
+  int             m_cheatCount = 0;
+  bool            m_cheatsOn = false;
+  bool            m_romCheats = false;          // on, with at least one Game Genie code
+  uint8_t const * m_prgSource[4] = { };         // the pages the mapper selected, unpatched
+  static constexpr int PATCH_PAGES = 6;         // 8 KB of RAM each
+  struct { uint8_t const * source; uint8_t * copy; } m_patched[PATCH_PAGES] = { };
+
   uint8_t * const * m_lines;
   uint8_t const *   m_colorMap;
   bool              m_vgaOrder;
+  LineHook   m_lineHook = nullptr;
+  void *     m_lineHookArg = nullptr;
   KickFunc   m_kick;
   void *     m_kickArg;
 

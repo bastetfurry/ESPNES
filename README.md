@@ -12,7 +12,8 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
   Sprite evaluation follows the hardware byte by byte: it starts at OAMADDR (which rendering
   resets to 0 every line), re-aligns a misaligned address, and has the overflow flag bug.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
-- **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM), 4 (MMC3, with its scanline IRQ). The cartridge layer works through bank pointer tables, so a
+- **Mappers:** 0 (NROM), 1 (MMC1, including SUROM's 512 KB), 2 (UxROM), 4 (MMC3, with its scanline
+  IRQ), 7 (AxROM, with AOROM bus conflicts), 71 (Camerica/Codemasters, with Fire Hawk's mirroring). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the
@@ -61,7 +62,7 @@ are emulated at 50 frames per second on the 60 Hz signal.
 | Select | Shift             |
 | Start  | Space             |
 
-Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up. In the list, Left/Right picks the TV system
+Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up, F10 switches cheats. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
@@ -144,6 +145,22 @@ while in a game loses what happened since the game was started, so go back to th
 Save files are named after the start of the ROM's name plus the CRC32 of its contents, so
 renaming a ROM keeps its save. Some games (Zelda) also use that RAM as working memory, so it
 changes every session and gets written on every return to the list.
+
+## Cheat codes
+
+G in the ROM list opens the selected game's codes: type a code and Enter adds it, Up/Down selects,
+Del removes, Esc saves and goes back. Each code shows what it decodes to.
+
+- **Game Genie:** 6 or 8 letters (`SXIOPO`). They patch what the CPU reads from ROM: an 8 KB page a
+  code applies to (for 8 letter codes, only where the ROM holds the compare value) is copied to
+  RAM, patched and mapped in its place, so the CPU's ROM reads stay as fast as without codes. Up
+  to six such pages (48 KB of RAM) at a time.
+- **Action Replay:** a RAM address and value in hex, `AAAA:VV` (also `AAAAVV` or `00AAAAVV`),
+  written at the start of every frame.
+
+A game's codes are on when it starts; F10 switches them off and on (shown briefly on screen). They
+are saved in SPIFFS next to the save games, only when changed. Over serial: `g` and a number opens
+the editor (characters type, Enter adds, `!` removes, `~` leaves), `c` in a game toggles.
 
 ## Per game settings
 

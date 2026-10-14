@@ -16,6 +16,7 @@ enum class Region : uint8_t { NTSC, PAL };
 
 struct RomInfo {
   int       mapper;
+  int       submapper;     // NES 2.0 only, else 0
   int       prgSize;       // bytes
   int       chrSize;       // bytes, 0 = the cartridge has 8 KB CHR RAM instead
   Mirroring mirroring;

@@ -66,6 +66,9 @@ char const * Nes::insert(uint8_t const * image, size_t size)
 
 void Nes::eject()
 {
+  freePatchedPages();
+  m_cheatCount = 0;
+  m_cheatsOn = m_romCheats = false;
   delete m_mapper;
   m_mapper = nullptr;
   free(prgRam);
@@ -107,6 +110,89 @@ void Nes::powerOn()
   cpu.cycles  = 0;
   frameCount  = 0;
   cpu.reset();
+}
+
+
+void Nes::setCheats(Cheat const * list, int count)
+{
+  m_cheatCount = count < MAX_CHEATS ? count : MAX_CHEATS;
+  for (int i = 0; i < m_cheatCount; ++i)
+    m_cheats[i] = list[i];
+  enableCheats(m_cheatsOn);
+}
+
+
+void Nes::enableCheats(bool on)
+{
+  m_cheatsOn = on;
+  bool rom = false;
+  for (int i = 0; i < m_cheatCount; ++i)
+    rom |= m_cheats[i].rom;
+  m_romCheats = on && rom;
+  freePatchedPages();
+  remapPrg();
+}
+
+
+void Nes::remapPrg()
+{
+  for (int i = 0; i < 4; ++i)
+    if (m_prgSource[i])
+      mapPrg8K(i, m_prgSource[i]);
+}
+
+
+void Nes::freePatchedPages()
+{
+  for (auto & p : m_patched) {
+    free(p.copy);
+    p.copy = nullptr;
+    p.source = nullptr;
+  }
+  // nothing may point into a freed copy any more
+  for (int i = 0; i < 4; ++i)
+    if (m_prgSource[i])
+      prgMap[i] = m_prgSource[i];
+}
+
+
+// The page to map at 'slot' for the ROM page 'page': a patched RAM copy if a Game Genie code
+// applies to it (for 8 letter codes: only where the ROM holds the compare value), else the page.
+uint8_t const * Nes::patchedPage(int slot, uint8_t const * page)
+{
+  uint16_t base = 0x8000 + slot * 0x2000;
+  bool applies = false;
+  for (int i = 0; i < m_cheatCount && !applies; ++i) {
+    Cheat const & c = m_cheats[i];
+    applies = c.rom && (uint16_t)(c.addr - base) < 0x2000 &&
+              (c.compare < 0 || page[c.addr - base] == c.compare);
+  }
+  if (!applies)
+    return page;
+
+  for (auto & p : m_patched)
+    if (p.source == page)
+      return p.copy;
+
+  // a new copy: a free entry, or one that is not mapped at the moment
+  for (auto & p : m_patched) {
+    bool mapped = false;
+    for (int i = 0; i < 4; ++i)
+      mapped |= p.copy && prgMap[i] == p.copy;
+    if (p.copy && mapped)
+      continue;
+    if (!p.copy && !(p.copy = (uint8_t *) malloc(0x2000)))
+      return page;                                // out of RAM: unpatched
+    memcpy(p.copy, page, 0x2000);
+    for (int i = 0; i < m_cheatCount; ++i) {
+      Cheat const & c = m_cheats[i];
+      if (c.rom && (uint16_t)(c.addr - base) < 0x2000 && (c.compare < 0 || page[c.addr - base] == c.compare))
+        p.copy[c.addr - base] = c.value;
+    }
+    p.source = page;
+    return p.copy;
+  }
+  return page;                                    // all entries mapped: unpatched
 }
 
 
@@ -252,6 +338,8 @@ void Nes::drawQueuedLines()
       ;
     uint32_t t0 = nesClock();
     ppu.drawLine(m_lineStates[y], y, m_lines[y], m_colorMap, m_vgaOrder);
+    if (m_lineHook)
+      m_lineHook(m_lineHookArg, y, m_lines[y]);
     busy += nesClock() - t0;
     m_linesDrawn.store(y + 1, std::memory_order_release);
   }
@@ -309,6 +397,11 @@ void Nes::dmaInRead(uint16_t addr)
 
 NES_HOT void Nes::runFrame(bool draw)
 {
+  if (NES_UNLIKELY(m_cheatsOn))
+    for (int i = 0; i < m_cheatCount; ++i)
+      if (!m_cheats[i].rom)
+        write(m_cheats[i].addr, m_cheats[i].value);
+
   draw = draw && m_lines;
   bool async = draw && m_kick;
   if (async) {
@@ -326,6 +419,8 @@ NES_HOT void Nes::runFrame(bool draw)
         m_linesQueued.store(y + 1, std::memory_order_release);
       } else {
         ppu.drawLine(m_lineStates[y], y, m_lines[y], m_colorMap, m_vgaOrder);
+        if (m_lineHook)
+          m_lineHook(m_lineHookArg, y, m_lines[y]);
       }
     }
     int hitX = ppu.evaluateLine(y);

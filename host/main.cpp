@@ -9,7 +9,8 @@
 //                                         trace=FROM-TO logs PPU register writes (and $4015 reads) in
 //                                         those frames, traceapu adds the APU register writes;
 //                                         sram=file loads the save RAM before and stores it after;
-//                                         oc=PERCENT overclocks the CPU (0-100); ntdump prints both
+//                                         oc=PERCENT overclocks the CPU (0-100); cheat=CODE adds a Game
+//                                         Genie or Action Replay code (repeatable); ntdump prints both
 //                                         nametables' tile numbers as text at the end; ram=A,B,..
 //                                         prints those CPU RAM bytes (hex addresses) at the end;
 //                                         watch=A,B,.. prints those bytes whenever they change
@@ -180,6 +181,8 @@ static int run(int argc, char ** argv)
   char const * wavPath = nullptr;
   char const * sramPath = nullptr;
   bool ntdump = false;
+  Cheat cheats[Nes::MAX_CHEATS];
+  int cheatCount = 0;
   std::vector<int> peeks, watches;
   std::vector<int16_t> audio;
   for (int i = 5; i < argc; ++i) {
@@ -199,6 +202,12 @@ static int run(int argc, char ** argv)
     }
     else if (!strcmp(argv[i], "ntdump"))
       ntdump = true;
+    else if (!strncmp(argv[i], "cheat=", 6)) {
+      if (!decodeCheat(argv[i] + 6, &cheats[cheatCount]))
+        fprintf(stderr, "invalid cheat %s\n", argv[i] + 6);
+      else
+        ++cheatCount;
+    }
     else if (!strncmp(argv[i], "oc=", 3))
       nes.setOverclock(atoi(argv[i] + 3));
     else if (!strncmp(argv[i], "sram=", 5))
@@ -237,6 +246,10 @@ static int run(int argc, char ** argv)
       fclose(sf);
     }
   nes.powerOn();
+  if (cheatCount) {
+    nes.setCheats(cheats, cheatCount);
+    nes.enableCheats(true);
+  }
   for (int f = 0; f < frames; ++f) {
     uint8_t b = 0;
     for (auto & h : holds)

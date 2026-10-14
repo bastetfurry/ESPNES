@@ -170,66 +170,114 @@ static constexpr int LIST_Y = 20;
 static constexpr int PIC_X  = 256 - 4 - PICTURE_SIZE;
 static constexpr int PIC_Y  = LIST_Y;
 
-static void drawMenu(int selected, int top, int visible, char const * message)
+// What the menu shows right now, so a key press redraws only what changed instead of the whole
+// screen (which flickers). Any other screen (a game, a manual) invalidates it.
+static struct {
+  bool         valid = false;
+  int          selected, top;
+  RegionChoice region;
+  char const * message;
+} s_shown;
+
+
+static void drawRow(int idx, int top, bool highlighted)
+{
+  fabgl::Canvas & cv = *s_canvas;
+  int y = LIST_Y + (idx - top) * 9;
+  cv.setBrushColor(highlighted ? Color::Blue : Color::Black);
+  cv.fillRectangle(0, y - 1, PIC_X - 6, y + 7);
+  String n = g_roms[idx].title;
+  if (n.length() > 21)
+    n = n.substring(0, 21);
+  cv.setPenColor(highlighted ? Color::BrightWhite : Color::White);
+  cv.drawText(4, y, n.c_str());        // glyphs fill their background with the brush colour
+  cv.setBrushColor(Color::Black);
+}
+
+
+static void drawRegion()
+{
+  static char const * regionNames[] = { "Auto", "NTSC", "PAL " };
+  char buf[16];
+  snprintf(buf, sizeof(buf), "TV: %s", regionNames[(int)s_regionChoice]);   // fixed width
+  s_canvas->setPenColor(Color::White);
+  s_canvas->drawText(256 - 8 - 8 * 8, 4, buf);
+}
+
+
+static void drawMessage(char const * message)
 {
   fabgl::Canvas & cv = *s_canvas;
   cv.setBrushColor(Color::Black);
-  cv.clear();
-  cv.setPenColor(Color::BrightYellow);
-  cv.drawText(8, 4, "ESPNES");
-  cv.setPenColor(Color::White);
-  static char const * regionNames[] = { "Auto", "NTSC", "PAL" };
-  char buf[48];
-  snprintf(buf, sizeof(buf), "TV: %s", regionNames[(int)s_regionChoice]);
-  cv.drawText(256 - 8 - strlen(buf) * 8, 4, buf);
-
-  if (!g_romCount) {
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(8, 40, "No ROMs built in.");
-    cv.setPenColor(Color::White);
-    cv.drawText(8, 56, "Put .nes files in roms/ and");
-    cv.drawText(8, 68, "run pio run -t upload");
-  }
-  // the list, left of the picture box
-  for (int i = 0; i < visible && top + i < g_romCount; ++i) {
-    int idx = top + i;
-    int y = LIST_Y + i * 9;
-    if (idx == selected) {
-      cv.setBrushColor(Color::Blue);
-      cv.fillRectangle(0, y - 1, PIC_X - 6, y + 7);
-    }
-    String n = g_roms[idx].title;
-    if (n.length() > 21)
-      n = n.substring(0, 21);
-    cv.setPenColor(idx == selected ? Color::BrightWhite : Color::White);
-    cv.drawText(4, y, n.c_str());
-    cv.setBrushColor(Color::Black);
-  }
-
-  // the picture box, empty when the game has no picture
-  if (g_romCount) {
-    cv.setPenColor(Color::BrightBlack);
-    cv.drawRectangle(PIC_X - 1, PIC_Y - 1, PIC_X + PICTURE_SIZE, PIC_Y + PICTURE_SIZE);
-  }
-
+  cv.fillRectangle(0, 209, 255, 218);
   if (message) {
     cv.setPenColor(Color::BrightRed);
     cv.drawText(8, 210, message);
   }
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(4, 222, "Enter:play L/R:TV M/Tab:manual");
-  cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
+}
+
+
+// straight into the frame buffer; call once the canvas has finished drawing
+static void drawPicture(int idx)
+{
+  uint8_t const * pic = g_roms[idx].picture;
+  for (int y = 0; y < PICTURE_SIZE; ++y) {
+    uint8_t * line = s_lines[PIC_Y + y];
+    for (int x = 0; x < PICTURE_SIZE; ++x)   // the DMA's byte order
+      line[(PIC_X + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
+  }
+}
+
+
+static void drawMenu(int selected, int top, int visible, char const * message)
+{
+  fabgl::Canvas & cv = *s_canvas;
+  bool full = !s_shown.valid || top != s_shown.top;
+  bool moved = full || selected != s_shown.selected;
+
+  if (full) {
+    cv.setBrushColor(Color::Black);
+    cv.clear();
+    cv.setPenColor(Color::BrightYellow);
+    cv.drawText(8, 4, "ESPNES");
+    drawRegion();
+    if (!g_romCount) {
+      cv.setPenColor(Color::BrightRed);
+      cv.drawText(8, 40, "No ROMs built in.");
+      cv.setPenColor(Color::White);
+      cv.drawText(8, 56, "Put .nes files in roms/ and");
+      cv.drawText(8, 68, "run pio run -t upload");
+    } else {
+      for (int i = 0; i < visible && top + i < g_romCount; ++i)
+        drawRow(top + i, top, top + i == selected);
+      // the picture box, empty when the game has no picture
+      cv.setPenColor(Color::BrightBlack);
+      cv.drawRectangle(PIC_X - 1, PIC_Y - 1, PIC_X + PICTURE_SIZE, PIC_Y + PICTURE_SIZE);
+    }
+    drawMessage(message);
+    cv.setPenColor(Color::BrightBlack);
+    cv.drawText(4, 222, "Enter:play L/R:TV M/Tab:manual");
+    cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
+  } else {
+    if (moved) {
+      drawRow(s_shown.selected, top, false);
+      drawRow(selected, top, true);
+    }
+    if (s_regionChoice != s_shown.region)
+      drawRegion();
+    if (message != s_shown.message)
+      drawMessage(message);
+  }
   cv.waitCompletion();
 
-  // the picture goes straight into the frame buffer, once the canvas is done with it
-  if (g_romCount && g_roms[selected].picture) {
-    uint8_t const * pic = g_roms[selected].picture;
-    for (int y = 0; y < PICTURE_SIZE; ++y) {
-      uint8_t * line = s_lines[PIC_Y + y];
-      for (int x = 0; x < PICTURE_SIZE; ++x)
-        line[(PIC_X + x) ^ 2] = s_raw[pic[y * PICTURE_SIZE + x] & 0x3f];   // the DMA's byte order
-    }
-  }
+  if (g_romCount && moved)
+    drawPicture(selected);
+
+  s_shown.valid    = true;
+  s_shown.selected = selected;
+  s_shown.top      = top;
+  s_shown.region   = s_regionChoice;
+  s_shown.message  = message;
 }
 
 
@@ -249,55 +297,69 @@ static void showManual(RomBlob const & rom)
   fabgl::Canvas & cv = *s_canvas;
   auto kb = PS2.keyboard();
   int page = 0;
-  for (;;) {
-    cv.setBrushColor(Color::Black);
-    cv.clear();
-    cv.setPenColor(Color::BrightCyan);
-    String title = rom.title;
-    if (title.length() > 26)
-      title = title.substring(0, 26);
-    cv.drawText(0, 4, title.c_str());
-    char num[12];
-    snprintf(num, sizeof(num), "%d/%d", page + 1, (int) pages.size());
-    cv.setPenColor(Color::BrightYellow);
-    cv.drawText(256 - strlen(num) * 8, 4, num);
 
-    // the page: runs of one colour at a time
+  // the frame of the viewer, drawn once; turning a page then overwrites the text in place,
+  // every line padded to the full width, which does not flicker like clearing the screen
+  cv.setBrushColor(Color::Black);
+  cv.clear();
+  cv.setPenColor(Color::BrightCyan);
+  String title = rom.title;
+  if (title.length() > 24)
+    title = title.substring(0, 24);
+  cv.drawText(0, 4, title.c_str());
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 230, "L/R:page  Esc:back");
+
+  for (;;) {
+    char num[12];
+    snprintf(num, sizeof(num), "%7s", (String(page + 1) + "/" + String((int) pages.size())).c_str());
+    cv.setPenColor(Color::BrightYellow);
+    cv.drawText(256 - 7 * 8, 4, num);
+
+    // the page: runs of one colour at a time, then spaces to the end of the line
     char const * p = pages[page];
+    bool pageDone = false;
     Color colour = Color::BrightWhite;
     char run[MANUAL_COLS + 1];
-    for (int row = 0; row < MANUAL_ROWS && *p && *p != '\f'; ++row) {
+    for (int row = 0; row < MANUAL_ROWS; ++row) {
+      int y = 20 + row * 8;
       int col = 0, len = 0, runCol = 0;
-      for (; *p && *p != '\n' && *p != '\f'; ++p) {
-        if (*p == 0x1b && p[1]) {
-          if (len) {
-            run[len] = 0;
-            cv.setPenColor(colour);
-            cv.drawText(runCol * 8, 20 + row * 8, run);
-            len = 0;
+      if (!pageDone) {
+        for (; *p && *p != '\n' && *p != '\f'; ++p) {
+          if (*p == 0x1b && p[1]) {
+            if (len) {
+              run[len] = 0;
+              cv.setPenColor(colour);
+              cv.drawText(runCol * 8, y, run);
+              len = 0;
+            }
+            colour = colours[(p[1] - '0') & 7];
+            ++p;
+            continue;
           }
-          colour = colours[(p[1] - '0') & 7];
+          if (col < MANUAL_COLS) {
+            if (!len)
+              runCol = col;
+            run[len++] = *p;
+            ++col;
+          }
+        }
+        if (len) {
+          run[len] = 0;
+          cv.setPenColor(colour);
+          cv.drawText(runCol * 8, y, run);
+        }
+        if (*p == '\n')
           ++p;
-          continue;
-        }
-        if (col < MANUAL_COLS) {
-          if (!len)
-            runCol = col;
-          run[len++] = *p;
-          ++col;
-        }
+        else
+          pageDone = true;     // '\f' or the end: the rest of the rows are blank
       }
-      if (len) {
-        run[len] = 0;
-        cv.setPenColor(colour);
-        cv.drawText(runCol * 8, 20 + row * 8, run);
+      if (col < MANUAL_COLS) {
+        memset(run, ' ', MANUAL_COLS - col);
+        run[MANUAL_COLS - col] = 0;
+        cv.drawText(col * 8, y, run);
       }
-      if (*p == '\n')
-        ++p;
     }
-
-    cv.setPenColor(Color::BrightBlack);
-    cv.drawText(0, 230, "L/R:page  Esc:back");
     cv.waitCompletion();
 
     // keys
@@ -345,6 +407,7 @@ static int chooseRom(char const * message)
   const int visible = 20;
   auto kb = PS2.keyboard();
   listRoms();
+  s_shown.valid = false;              // a game or something else was on the screen
   if (selected >= g_romCount)
     selected = 0;
   for (;;) {
@@ -370,8 +433,10 @@ static int chooseRom(char const * message)
           selected = idx;
           if (!manual)
             return idx;
-          if (g_roms[idx].manual)
+          if (g_roms[idx].manual) {
             showManual(g_roms[idx]);
+            s_shown.valid = false;
+          }
           vk = fabgl::VK_NONE;
           break;
         }
@@ -386,9 +451,10 @@ static int chooseRom(char const * message)
     message = nullptr;
     switch (vk) {
       case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
-        if (n && g_roms[selected].manual)
+        if (n && g_roms[selected].manual) {
           showManual(g_roms[selected]);
-        else
+          s_shown.valid = false;
+        } else
           message = "No manual for this game";
         break;
       case fabgl::VK_UP:       case fabgl::VK_KP_UP:       if (n) selected = (selected + n - 1) % n; break;

@@ -13,7 +13,22 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. ROMs live in the SPI
 - **Mappers:** 0 (NROM). The cartridge layer works through bank pointer tables, ready for MMCs.
 - **Not yet:** sound (APU registers are stored, not played), colour emphasis, PPU open bus decay.
 
-Super Mario Bros. runs at full speed with no frame skipping: ~15 ms of emulation per 16.6 ms frame.
+Super Mario Bros. runs at full speed with no frame skipping, using ~7.5 ms of the 16.6 ms frame.
+
+## Cores
+
+Core 1 runs the CPU and the PPU's timing; core 0 draws the picture. At the start of each visible
+line core 1 snapshots the PPU state the line depends on (scroll, control, mask, palette, bank
+pointers) and moves on; core 0 draws from those snapshots straight into the VGA frame buffer.
+Sprite 0 hit is still decided on core 1 (it only needs the 8 pixels under sprite 0), so the CPU
+sees it at the right dot. Before vblank, when games rewrite VRAM and OAM, core 1 waits for core 0
+to finish the frame; in practice it never has to.
+
+The drawing code lives in flash on purpose, not IRAM: both cores fetching instructions from IRAM
+at once slowed each other down measurably, while flash code runs from each core's own cache.
+
+The serial console prints per frame timings every 5 seconds: emulation time on core 1, drawing
+time on core 0, and how long core 1 waited for it.
 
 ## Video
 
@@ -52,7 +67,8 @@ SPIFFS has no directories and names are limited to 31 characters, so keep ROM fi
 
 - `src/nes/` the emulator core, plain C++ without ESP32 dependencies
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
-- `host/` PC build of the core: nestest check, frame dumps to PPM, a benchmark
+- `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
+  thread like the ESP32 build), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
 - `roms/` packed into SPIFFS by `uploadfs`
 - `testroms/` test ROMs for the host harness (nestest)

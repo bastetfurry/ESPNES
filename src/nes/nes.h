@@ -1,6 +1,8 @@
 // The console: CPU and PPU on a common bus, the cartridge's bank maps, controllers, frame timing.
 #pragma once
 
+#include <atomic>
+
 #include "platform.h"
 #include "cart.h"
 #include "cpu.h"
@@ -14,9 +16,6 @@ enum : uint8_t {
 
 class Nes {
 public:
-
-  // receives each visible line as 256 NES colour indices (0-63)
-  typedef void (*LineSink)(void * arg, int y, uint8_t const * colors);
 
   Nes();
   ~Nes();
@@ -35,7 +34,27 @@ public:
   void runFrame(bool draw);
 
   void setButtons(int port, uint8_t buttons)  { m_buttons[port] = buttons; }
-  void setLineSink(LineSink sink, void * arg) { m_sink = sink; m_sinkArg = arg; }
+  // Where the picture goes: 240 line buffers of 256 bytes (32 bit aligned), the output byte for
+  // each of the 64 NES colours, and whether to use FabGL's raw scanline byte order.
+  void setVideoOutput(uint8_t * const * lines, uint8_t const * colorMap, bool vgaOrder)
+  {
+    m_lines = lines;
+    m_colorMap = colorMap;
+    m_vgaOrder = vgaOrder;
+  }
+
+  // --- drawing on another core ---
+  // Without a kick function, runFrame() draws each line itself. With one, runFrame() only
+  // snapshots the PPU state per line and calls kick(arg) at the start of each drawn frame; the
+  // other core then calls drawQueuedLines(), which returns when the frame's 240 lines are done.
+  // runFrame() waits for that before vblank, when games start changing VRAM and OAM.
+  typedef void (*KickFunc)(void * arg);
+  void setRenderKick(KickFunc kick, void * arg) { m_kick = kick; m_kickArg = arg; }
+  void drawQueuedLines();
+
+  // profiling, in CPU clock cycles (0 on the host), of the last drawn frame
+  uint32_t   profWait;                  // runFrame waiting for the drawing to finish
+  uint32_t   profDraw;                  // drawQueuedLines busy drawing (not waiting for lines)
 
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }
@@ -84,9 +103,15 @@ private:
   bool       m_strobe;
   uint8_t    m_apuRegs[0x18];    // stored, not yet played
 
-  LineSink   m_sink;
-  void *     m_sinkArg;
-  uint8_t    m_line[256];
+  uint8_t * const * m_lines;
+  uint8_t const *   m_colorMap;
+  bool              m_vgaOrder;
+  KickFunc   m_kick;
+  void *     m_kickArg;
+
+  Ppu::LineState    m_lineStates[240];
+  std::atomic<int>  m_linesQueued;   // written by runFrame
+  std::atomic<int>  m_linesDrawn;    // written by drawQueuedLines
 };
 
 

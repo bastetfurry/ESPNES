@@ -1,10 +1,17 @@
 // Ricoh 2C02 / 2C07 PPU, scanline based.
 //
-// Each visible line is drawn in one go at its start, from the scroll registers as they are
-// at that moment (the "loopy" v/t/x/w model, so $2005/$2006 splits work). The fine Y increment
-// and horizontal reload happen at dot 256, as on hardware. Sprite 0 hit is computed while drawing
-// and becomes visible to $2002 only once the CPU has reached the dot where it happens, so games
-// that time a status bar split on it see it on the right line.
+// Each visible line is drawn in one go, from the registers as they are at the line's start (the
+// "loopy" v/t/x/w model, so $2005/$2006 splits work). The fine Y increment and horizontal reload
+// happen at dot 256, as on hardware.
+//
+// Drawing is split from the CPU's side of the line so it can run on the other core: at the line
+// start the CPU side takes a LineState snapshot (scroll, control, mask, palette, bank pointers)
+// and works out the sprite 0 hit and overflow itself, which only needs the pixels under sprite 0.
+// drawLine() then turns the snapshot into pixels at leisure. Nametables, OAM and CHR RAM are not
+// copied: games change them in vblank, and Nes waits for the drawing to finish before vblank.
+//
+// The sprite 0 hit becomes visible to $2002 only once the CPU has reached the dot where it
+// happens, so games that time a status bar split on it see it on the right line.
 #pragma once
 
 #include "platform.h"
@@ -21,10 +28,25 @@ public:
   void    writeRegister(uint16_t addr, uint8_t value);
   void    oamDma(uint8_t const * page);
 
-  // Draws visible line y into 'out' (256 NES colour indices, 0-63) when out != nullptr. With
-  // nullptr nothing is drawn, but sprite 0 hit is still evaluated (for skipped frames).
-  // Returns the x position of the sprite 0 hit on this line, or -1.
-  int  renderLine(int y, uint8_t * out);
+  // everything drawLine needs that the CPU may change during the frame
+  struct LineState {
+    uint16_t  v;
+    uint8_t   x, ctrl, mask;
+    uint8_t   palette[32];
+    uint8_t * chrMap[8];
+    uint8_t * ntMap[4];
+  };
+
+  void captureLine(LineState & s) const;
+
+  // CPU side of visible line y, at its start: sets the sprite overflow flag and returns the x
+  // position of the sprite 0 hit on this line, or -1.
+  int  evaluateLine(int y);
+
+  // Draws visible line y from a snapshot into 'out' (256 pixels, 32 bit aligned), each NES colour
+  // (0-63) translated through colorMap. vgaOrder stores the pixels in FabGL's raw scanline byte
+  // order. Touches no PPU state, so it may run on another core.
+  void drawLine(LineState const & s, int y, uint8_t * out, uint8_t const * colorMap, bool vgaOrder) const;
 
   // dot 256-257 of a rendered line: fine Y increment and horizontal copy from t
   void endOfLine();
@@ -51,6 +73,7 @@ public:
 
 private:
 
+  bool     bgOpaqueAt(int x) const;
   uint8_t  vramRead(uint16_t addr);
   void     vramWrite(uint16_t addr, uint8_t value);
 

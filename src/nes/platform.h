@@ -7,6 +7,9 @@
 
 #ifdef ARDUINO
   #include "esp_attr.h"
+  #include "xtensa/core-macros.h"
+  // CPU clock cycles, for profiling
+  static inline uint32_t nesClock() { return XTHAL_GET_CCOUNT(); }
   // Hot paths go to IRAM: from flash they would fight over the cache with every ROM byte fetch.
   #define NES_HOT IRAM_ATTR
   // Tables read on every pixel or instruction: internal RAM, not flash rodata.
@@ -14,6 +17,7 @@
 #else
   #define NES_HOT
   #define NES_FASTDATA
+  static inline uint32_t nesClock() { return 0; }
 #endif
 
 #define NES_LIKELY(x)   __builtin_expect(!!(x), 1)

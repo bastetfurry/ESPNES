@@ -4,6 +4,9 @@
 // VGAController sends the frame buffer by DMA straight from its line buffers, and the PPU writes
 // its finished lines into those buffers as raw VGA pixels, so the picture costs no interrupt time.
 //
+// Cores: the CPU and the PPU's timing run in the Arduino loop task on core 1; the lines are drawn
+// by a task on core 0 from per-line snapshots (see Nes::setRenderKick).
+//
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start,
 //       Esc = back to the ROM list, F1 = reset.
 // Serial console: a number starts that ROM from the list, 'q' leaves the game.
@@ -25,16 +28,23 @@ static fabgl::PS2Controller   PS2;
 static Nes                    nes;
 
 static uint8_t                s_raw[64];        // NES colour -> raw VGA pixel (RGB222 + sync bits)
-static uint32_t *             s_lines[240];     // the frame buffer's line pointers
+static uint8_t *              s_lines[240];     // the frame buffer's line pointers
 
 
-// Converts a line of NES colours to raw pixels. In a 32 bit word the VGA DMA sends byte 2 first,
-// then 3, 0, 1 (see VGABaseController::getScanline), so pixels are stored in that order.
-static void NES_HOT lineSink(void *, int y, uint8_t const * c)
+static TaskHandle_t s_renderTask;
+
+static void renderTask(void *)
 {
-  uint32_t * dst = s_lines[y];
-  for (int x = 0; x < 256; x += 4, c += 4)
-    *dst++ = s_raw[c[2]] | (s_raw[c[3]] << 8) | (s_raw[c[0]] << 16) | (s_raw[c[1]] << 24);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    nes.drawQueuedLines();
+  }
+}
+
+
+static void kickRenderer(void *)
+{
+  xTaskNotifyGive(s_renderTask);
 }
 
 
@@ -51,8 +61,14 @@ static void initVideo()
     s_raw[i] = VGA.createRawPixel(RGB222(q(c >> 16), q(c >> 8), q(c)));
   }
   for (int y = 0; y < 240; ++y)
-    s_lines[y] = (uint32_t *) VGA.getScanline(y);
-  nes.setLineSink(lineSink, nullptr);
+    s_lines[y] = VGA.getScanline(y);
+  // the PPU draws raw pixels straight into the frame buffer, in the DMA's byte order
+  nes.setVideoOutput(s_lines, s_raw, true);
+
+  // Priority above the idle task but below FabGL's keyboard task (5). Between frames it blocks,
+  // so core 0's idle task still runs and its watchdog stays quiet.
+  xTaskCreatePinnedToCore(renderTask, "render", 3072, nullptr, 2, &s_renderTask, 0);
+  nes.setRenderKick(kickRenderer, nullptr);
 }
 
 
@@ -279,6 +295,7 @@ static void runGame()
   // statistics, printed every 5 seconds
   int64_t statStart = next, busy = 0, worst = 0;
   int frames = 0, drawn = 0;
+  uint64_t waitCycles = 0, drawCycles = 0;
 
   for (;;) {
     // keys other than the pad
@@ -299,6 +316,10 @@ static void runGame()
     int64_t t0 = esp_timer_get_time();
     nes.runFrame(draw);
     int64_t t1 = esp_timer_get_time();
+    if (draw) {
+      waitCycles += nes.profWait;
+      drawCycles += nes.profDraw;
+    }
     busy += t1 - t0;
     worst = std::max(worst, t1 - t0);
     ++frames;
@@ -314,8 +335,9 @@ static void runGame()
     int64_t now = esp_timer_get_time();
     if (now < next) {
       int64_t wait = next - now;
-      if (wait > 2000)
-        vTaskDelay(pdMS_TO_TICKS((wait - 1000) / 1000));
+      // sleep in whole ticks (1 ms), which can overshoot by one; busy wait the rest
+      if (wait > 3000)
+        vTaskDelay(pdMS_TO_TICKS((wait - 2000) / 1000));
       while (esp_timer_get_time() < next)
         ;
       draw = true;
@@ -331,6 +353,10 @@ static void runGame()
       Serial.printf("%.1f fps (%.1f drawn), emulation %lld us/frame avg, %lld worst (budget %lld)\n",
                     frames * 1e6 / (now - statStart), drawn * 1e6 / (now - statStart),
                     busy / frames, worst, period);
+      if (drawn)
+        Serial.printf("  core 0 drawing %llu us/frame, core 1 waiting for it %llu us/frame\n",
+                      drawCycles / drawn / 240, waitCycles / drawn / 240);
+      waitCycles = drawCycles = 0;
       statStart = now;
       busy = worst = 0;
       frames = drawn = 0;
@@ -343,6 +369,9 @@ static void runGame()
 
 void setup()
 {
+  // A buffered TX, so the statistics line does not block the emulation for 13 ms and make it
+  // skip a frame every time it is printed
+  Serial.setTxBufferSize(1024);
   Serial.begin(115200);
   delay(200);
   Serial.println("\nESPNES");

@@ -11,11 +11,17 @@ Nes::Nes()
     m_chrRam(nullptr),
     m_fourScreenRam(nullptr),
     m_strobe(false),
-    m_sink(nullptr),
-    m_sinkArg(nullptr)
+    m_lines(nullptr),
+    m_colorMap(nullptr),
+    m_vgaOrder(false),
+    m_kick(nullptr),
+    m_kickArg(nullptr),
+    m_linesQueued(0),
+    m_linesDrawn(0)
 {
   cpu.init(this);
   ppu.init(this);
+  profWait = profDraw = 0;
   m_buttons[0] = m_buttons[1] = 0;
   m_shift[0] = m_shift[1] = 0;
   setRegion(Region::NTSC);
@@ -198,19 +204,46 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 }
 
 
+void Nes::drawQueuedLines()
+{
+  uint32_t busy = 0;
+  for (int y = 0; y < 240; ++y) {
+    while (m_linesQueued.load(std::memory_order_acquire) <= y)
+      ;
+    uint32_t t0 = nesClock();
+    ppu.drawLine(m_lineStates[y], y, m_lines[y], m_colorMap, m_vgaOrder);
+    busy += nesClock() - t0;
+    m_linesDrawn.store(y + 1, std::memory_order_release);
+  }
+  profDraw = busy;
+}
+
+
 NES_HOT void Nes::runFrame(bool draw)
 {
-  uint8_t * out = (draw && m_sink) ? m_line : nullptr;
+  draw = draw && m_lines;
+  bool async = draw && m_kick;
+  if (async) {
+    m_linesQueued.store(0, std::memory_order_relaxed);
+    m_linesDrawn.store(0, std::memory_order_relaxed);
+    m_kick(m_kickArg);
+  }
 
   // visible lines 0-239
   for (int y = 0; y < 240; ++y) {
     cpu.run(cycleAt(y, 0));
-    int hitX = ppu.renderLine(y, out);
+    if (draw) {
+      ppu.captureLine(m_lineStates[y]);
+      if (async) {
+        m_linesQueued.store(y + 1, std::memory_order_release);
+      } else {
+        ppu.drawLine(m_lineStates[y], y, m_lines[y], m_colorMap, m_vgaOrder);
+      }
+    }
+    int hitX = ppu.evaluateLine(y);
     // the flag rises about two dots after the pixel goes out
     if (hitX >= 0 && ppu.spr0HitCycle == INT32_MAX)
       ppu.spr0HitCycle = cycleAt(y, hitX + 2);
-    if (out)
-      m_sink(m_sinkArg, y, out);
     cpu.run(cycleAt(y, 256));
     ppu.endOfLine();
     if (ppu.renderingEnabled())
@@ -219,6 +252,12 @@ NES_HOT void Nes::runFrame(bool draw)
 
   // line 240 is idle, vblank starts at line 241 dot 1
   cpu.run(cycleAt(241, 1));
+  if (async) {
+    uint32_t t0 = nesClock();
+    while (m_linesDrawn.load(std::memory_order_acquire) < 240)
+      ;
+    profWait = nesClock() - t0;
+  }
   ppu.setVBlank();
 
   // pre-render line: the last of the frame

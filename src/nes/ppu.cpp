@@ -225,56 +225,136 @@ void Ppu::copyVertical()
 }
 
 
-NES_HOT int Ppu::renderLine(int y, uint8_t * out)
+// PPU address of the pattern row 'row' (0 = top, before flipping) of a sprite
+static inline uint16_t spritePatternAddr(uint8_t ctrl, uint8_t tile, uint8_t attr, int row)
 {
-  if (!renderingEnabled()) {
-    if (out)
-      memset(out, palette[0], 256);
-    return -1;
+  if (!(ctrl & 0x20)) {
+    if (attr & 0x80)
+      row = 7 - row;
+    return ((ctrl & 0x08) << 9) | (tile << 4) | row;
   }
+  if (attr & 0x80)
+    row = 15 - row;
+  return ((tile & 1) << 12) | ((tile & 0xfe) << 4) | ((row & 8) << 1) | (row & 7);
+}
 
-  // --- sprite evaluation (on hardware this happens during the previous line) ---
+
+void Ppu::captureLine(LineState & s) const
+{
+  s.v    = m_v;
+  s.x    = m_x;
+  s.ctrl = m_ctrl;
+  s.mask = m_mask;
+  memcpy(s.palette, palette, sizeof(palette));
+  memcpy(s.chrMap, chrMap, sizeof(chrMap));
+  memcpy(s.ntMap, ntMap, sizeof(ntMap));
+}
+
+
+// Is the background pixel at screen x (0-255) on the current line opaque? Uses the live
+// registers, so it answers for the line about to be drawn.
+inline bool Ppu::bgOpaqueAt(int x) const
+{
+  int pos = m_x + x;
+  int coarseX = (m_v & 0x1f) + (pos >> 3);
+  int nt = (m_v >> 10) & 3;
+  if (coarseX >= 32) {
+    coarseX -= 32;
+    nt ^= 1;
+  }
+  uint8_t name = ntMap[nt][(m_v & 0x03e0) | coarseX];
+  uint16_t pa = ((m_ctrl & 0x10) << 8) | (name << 4) | ((m_v >> 12) & 7);
+  uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
+  int bit = 7 - (pos & 7);
+  return ((chr[0] | chr[8]) >> bit) & 1;
+}
+
+
+NES_HOT int Ppu::evaluateLine(int y)
+{
+  if (!(m_mask & 0x10))
+    return -1;
+
   int height = (m_ctrl & 0x20) ? 16 : 8;
-  int found[8];
   int count = 0;
-  bool spr0OnLine = false;
-  if (m_mask & 0x10) {
-    for (int i = 0; i < 64; ++i) {
-      unsigned row = (unsigned)(y - 1 - oam[i * 4]);
-      if (row < (unsigned)height) {
-        if (count == 8) {
-          m_status |= 0x20;     // overflow (without the hardware's evaluation bug)
-          break;
-        }
-        if (i == 0)
-          spr0OnLine = true;
-        found[count++] = i;
+  for (int i = 0; i < 64; ++i) {
+    if ((unsigned)(y - 1 - oam[i * 4]) < (unsigned)height) {
+      if (++count > 8) {
+        m_status |= 0x20;       // overflow (without the hardware's evaluation bug)
+        break;
       }
     }
   }
 
-  // a skipped frame only needs the lines that can produce the sprite 0 hit
-  if (!out && !(spr0OnLine && (m_mask & 0x08)))
+  // sprite 0 hit: needs sprite 0 on this line and the background on
+  unsigned row = (unsigned)(y - 1 - oam[0]);
+  if (row >= (unsigned)height || !(m_mask & 0x08))
     return -1;
+  uint8_t tile = oam[1], attr = oam[2];
+  int sx = oam[3];
+  uint16_t pa = spritePatternAddr(m_ctrl, tile, attr, row);
+  uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
+  uint8_t bits = chr[0] | chr[8];
+  if (attr & 0x40)
+    bits = s_reverse[bits];
+  if (!bits)
+    return -1;
+  // either clip bit hides the leftmost 8 pixels from the hit test; x = 255 never hits
+  int minX = ((m_mask & 0x06) == 0x06) ? 0 : 8;
+  for (int px = 0; px < 8; ++px) {
+    int x = sx + px;
+    if (x > 254)
+      break;
+    if (x >= minX && ((bits >> (7 - px)) & 1) && bgOpaqueAt(x))
+      return x;
+  }
+  return -1;
+}
+
+
+// Stores pixels 4 at a time: c0 is the leftmost. In VGA order the DMA sends byte 2 of a word
+// first, then 3, 0, 1 (FabGL's raw scanline layout).
+#define PACK4(c0, c1, c2, c3)  (vgaOrder ? ((c2) | ((c3) << 8) | ((c0) << 16) | ((c1) << 24)) \
+                                         : ((c0) | ((c1) << 8) | ((c2) << 16) | ((c3) << 24)))
+
+void Ppu::drawLine(LineState const & st, int y, uint8_t * out, uint8_t const * colorMap, bool vgaOrder) const
+{
+  // the line's palette, already in output pixels; entries 4, 8 and 12 (transparent background
+  // pixels of palettes 1-3) show the backdrop, so a background pixel indexes it directly
+  uint8_t mono = (st.mask & 0x01) ? 0x30 : 0x3f;
+  uint8_t rp[32];
+  for (int i = 0; i < 32; ++i)
+    rp[i] = colorMap[st.palette[i] & mono];
+  rp[4] = rp[8] = rp[12] = rp[0];
+
+  uint32_t * dst32 = (uint32_t *) out;
+
+  if (!(st.mask & 0x18)) {
+    uint32_t w = rp[0] * 0x01010101u;
+    for (int i = 0; i < 64; ++i)
+      dst32[i] = w;
+    return;
+  }
 
   // --- background, into bg[] as (palette << 2 | pixel), pixel 0 being transparent ---
   uint8_t bg[256 + 16] __attribute__((aligned(4)));
-  if (m_mask & 0x08) {
-    uint16_t v = m_v;
-    int fineY = (v >> 12) & 7;
-    uint16_t patternBase = ((m_ctrl & 0x10) << 8) | fineY;
+  bool bgOn = st.mask & 0x08;
+  uint8_t const * bgLine = bg + st.x;
+  if (bgOn) {
+    uint16_t v = st.v;
+    uint16_t patternBase = ((st.ctrl & 0x10) << 8) | ((v >> 12) & 7);
     uint32_t * dst = (uint32_t *) bg;
     for (int tile = 0; tile < 33; ++tile) {
-      uint8_t const * nt = ntMap[(v >> 10) & 3];
+      uint8_t const * nt = st.ntMap[(v >> 10) & 3];
       int coarseX = v & 0x1f, coarseY = (v >> 5) & 0x1f;
       uint8_t name = nt[v & 0x3ff];
       uint8_t attr = nt[0x3c0 | ((coarseY >> 2) << 3) | (coarseX >> 2)];
-      uint32_t pal = ((attr >> (((coarseY & 2) << 1) | (coarseX & 2))) & 3) * 0x04040404u;
+      uint32_t palBits = ((attr >> (((coarseY & 2) << 1) | (coarseX & 2))) & 3) * 0x04040404u;
       uint16_t pa = patternBase | (name << 4);
-      uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
+      uint8_t const * chr = st.chrMap[pa >> 10] + (pa & 0x3ff);
       uint8_t lo = chr[0], hi = chr[8];
-      dst[0] = s_spread[lo >> 4]   | (s_spread[hi >> 4] << 1)   | pal;
-      dst[1] = s_spread[lo & 0x0f] | (s_spread[hi & 0x0f] << 1) | pal;
+      dst[0] = s_spread[lo >> 4]   | (s_spread[hi >> 4] << 1)   | palBits;
+      dst[1] = s_spread[lo & 0x0f] | (s_spread[hi & 0x0f] << 1) | palBits;
       dst += 2;
       // coarse X increment, wrapping into the horizontally adjacent nametable
       if ((v & 0x1f) == 0x1f)
@@ -282,80 +362,61 @@ NES_HOT int Ppu::renderLine(int y, uint8_t * out)
       else
         ++v;
     }
-    if (!(m_mask & 0x02))
-      memset(bg + m_x, 0, 8);   // leftmost 8 pixels hidden
-  } else {
-    memset(bg, 0, sizeof(bg));
-  }
-  uint8_t const * bgLine = bg + m_x;
+    if (!(st.mask & 0x02))
+      memset(bg + st.x, 0, 8);   // leftmost 8 pixels hidden
 
-  // --- sprites, into spr[]: 0x10 | palette << 2 | pixel, 0x20 = behind background, 0x40 = sprite 0
-  uint8_t spr[256 + 8];
-  int hitX = -1;
-  if (count) {
-    memset(spr, 0, sizeof(spr));
-    int minX = (m_mask & 0x04) ? 0 : 8;
-    for (int k = 0; k < count; ++k) {
-      int i = found[k];
-      uint8_t const * s = oam + i * 4;
-      int row = y - 1 - s[0];
-      uint8_t tile = s[1], attr = s[2];
-      int sx = s[3];
-      uint16_t pa;
-      if (height == 8) {
-        if (attr & 0x80)
-          row = 7 - row;
-        pa = ((m_ctrl & 0x08) << 9) | (tile << 4) | row;
-      } else {
-        if (attr & 0x80)
-          row = 15 - row;
-        pa = ((tile & 1) << 12) | ((tile & 0xfe) << 4) | ((row & 8) << 1) | (row & 7);
-      }
-      uint8_t const * chr = chrMap[pa >> 10] + (pa & 0x3ff);
-      uint8_t lo = chr[0], hi = chr[8];
-      if (attr & 0x40) {
-        lo = s_reverse[lo];
-        hi = s_reverse[hi];
-      }
-      if (!(lo | hi))
+    uint8_t const * b = bgLine;
+    for (int i = 0; i < 64; ++i, b += 4)
+      dst32[i] = PACK4(rp[b[0]], rp[b[1]], rp[b[2]], rp[b[3]]);
+  } else {
+    uint32_t w = rp[0] * 0x01010101u;
+    for (int i = 0; i < 64; ++i)
+      dst32[i] = w;
+  }
+
+  if (!(st.mask & 0x10))
+    return;
+
+  // --- sprites, drawn over the background in OAM order. The first opaque sprite pixel at an x
+  // claims it, even when it is behind the background and so not drawn: that hides any later
+  // sprite there (the "mushroom coming out of the block" effect).
+  int height = (st.ctrl & 0x20) ? 16 : 8;
+  int minX = (st.mask & 0x04) ? 0 : 8;
+  int xorX = vgaOrder ? 2 : 0;
+  uint32_t taken[8] = { 0 };
+  int count = 0;
+  for (int i = 0; i < 64 && count < 8; ++i) {
+    uint8_t const * s = oam + i * 4;
+    int row = y - 1 - s[0];
+    if ((unsigned) row >= (unsigned) height)
+      continue;
+    ++count;
+    uint8_t attr = s[2];
+    int sx = s[3];
+    uint16_t pa = spritePatternAddr(st.ctrl, s[1], attr, row);
+    uint8_t const * chr = st.chrMap[pa >> 10] + (pa & 0x3ff);
+    uint8_t lo = chr[0], hi = chr[8];
+    if (attr & 0x40) {
+      lo = s_reverse[lo];
+      hi = s_reverse[hi];
+    }
+    if (!(lo | hi))
+      continue;
+    uint8_t const * spal = rp + 0x10 + ((attr & 3) << 2);
+    bool behind = attr & 0x20;
+    for (int px = 0; px < 8; ++px) {
+      int x = sx + px;
+      if (x > 255)
+        break;
+      int p = ((lo >> (7 - px)) & 1) | (((hi >> (7 - px)) & 1) << 1);
+      if (!p || x < minX)
         continue;
-      uint8_t tag = 0x10 | ((attr & 3) << 2) | ((attr & 0x20) ? 0x20 : 0) | (i == 0 ? 0x40 : 0);
-      for (int px = 0; px < 8; ++px) {
-        int x = sx + px;
-        int p = ((lo >> (7 - px)) & 1) | (((hi >> (7 - px)) & 1) << 1);
-        // lower OAM index wins: only the first opaque sprite pixel is kept
-        if (p && x >= minX && !spr[x])
-          spr[x] = tag | p;
-      }
-    }
-
-    if (spr0OnLine && (m_mask & 0x08)) {
-      for (int x = 0; x < 255; ++x)
-        if ((spr[x] & 0x40) && (bgLine[x] & 3)) {
-          hitX = x;
-          break;
-        }
+      uint32_t bit = 1u << (x & 31);
+      if (taken[x >> 5] & bit)
+        continue;
+      taken[x >> 5] |= bit;
+      if (!behind || !bgOn || !(bgLine[x] & 3))
+        out[x ^ xorX] = spal[p];
     }
   }
-
-  if (!out)
-    return hitX;
-
-  // --- composition ---
-  uint8_t mono = (m_mask & 0x01) ? 0x30 : 0x3f;
-  if (!count) {
-    for (int x = 0; x < 256; ++x) {
-      uint8_t b = bgLine[x];
-      out[x] = palette[(b & 3) ? b : 0] & mono;
-    }
-  } else {
-    for (int x = 0; x < 256; ++x) {
-      uint8_t b = bgLine[x], s = spr[x];
-      int c = (b & 3) ? b : 0;
-      if (s && (!(s & 0x20) || !(b & 3)))
-        c = s & 0x1f;
-      out[x] = palette[c] & mono;
-    }
-  }
-  return hitX;
 }

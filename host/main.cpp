@@ -1,9 +1,10 @@
 // PC test harness for the emulator core (src/nes). Not part of the ESP32 build.
 //
 //   nestest <nestest.nes> <nestest.log>   run nestest's automated mode, compare with the golden log
-//   run <rom.nes> <frames> <out.ppm> [pal] [hold=BUTTONS@FROM-TO ...]
+//   run <rom.nes> <frames> <out.ppm> [pal] [async] [hold=BUTTONS@FROM-TO ...]
 //                                         run frames and write the last one as PPM; BUTTONS is
-//                                         a string of A B s(elect) S(tart) U D L R
+//                                         a string of A B s(elect) S(tart) U D L R; async draws
+//                                         on a second thread, as the ESP32 build does on core 0
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -11,6 +12,8 @@
 #include <string.h>
 #include <vector>
 #include <chrono>
+#include <thread>
+#include <atomic>
 
 #include "../src/nes/nes.h"
 #include "../src/nes/palette.h"
@@ -74,15 +77,29 @@ static int nestest(char const * romPath, char const * logPath)
 }
 
 
-static uint8_t s_frame[240][256];
+// the picture as NES colour indices: an identity colour map, plain byte order
+static uint8_t s_frame[240][256] __attribute__((aligned(4)));
+static uint8_t * s_frameLines[240];
+static uint8_t s_identity[64];
 
-static void sink(void *, int y, uint8_t const * colors)
+static void setupVideo(Nes & nes)
 {
-  memcpy(s_frame[y], colors, 256);
+  for (int i = 0; i < 64; ++i)
+    s_identity[i] = i;
+  for (int y = 0; y < 240; ++y)
+    s_frameLines[y] = s_frame[y];
+  nes.setVideoOutput(s_frameLines, s_identity, false);
 }
 
 
 struct Hold { uint8_t buttons; int from, to; };
+
+static std::atomic<int> s_kicks(0);
+
+static void kick(void *)
+{
+  ++s_kicks;
+}
 
 static uint8_t parseButtons(char const * s)
 {
@@ -113,9 +130,12 @@ static int run(int argc, char ** argv)
     return 1;
   }
   std::vector<Hold> holds;
+  bool async = false;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
+    else if (!strcmp(argv[i], "async"))
+      async = true;
     else if (!strncmp(argv[i], "hold=", 5)) {
       Hold h;
       h.buttons = parseButtons(argv[i] + 5);
@@ -123,7 +143,20 @@ static int run(int argc, char ** argv)
       holds.push_back(h);
     }
   }
-  nes.setLineSink(sink, nullptr);
+  setupVideo(nes);
+  std::atomic<bool> running(true);
+  std::thread worker;
+  if (async) {
+    nes.setRenderKick(kick, nullptr);
+    worker = std::thread([&] {
+      int done = 0;
+      while (running)
+        if (s_kicks > done) {
+          nes.drawQueuedLines();
+          ++done;
+        }
+    });
+  }
   nes.powerOn();
   for (int f = 0; f < frames; ++f) {
     uint8_t b = 0;
@@ -137,6 +170,9 @@ static int run(int argc, char ** argv)
       break;
     }
   }
+  running = false;
+  if (worker.joinable())
+    worker.join();
   FILE * f = fopen(outPath, "wb");
   fprintf(f, "P6\n256 240\n255\n");
   for (int y = 0; y < 240; ++y)
@@ -159,7 +195,7 @@ static int bench(char const * romPath, int frames)
     fprintf(stderr, "%s\n", err);
     return 1;
   }
-  nes.setLineSink(sink, nullptr);
+  setupVideo(nes);
   nes.powerOn();
   auto t0 = std::chrono::steady_clock::now();
   for (int f = 0; f < frames; ++f)

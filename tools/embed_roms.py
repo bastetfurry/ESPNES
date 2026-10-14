@@ -2,7 +2,7 @@
 #
 # roms/settings.csv lists the games in menu order, one per line:
 #   "file name.nes", "name shown in the menu", "picture.png", "manual.txt", options
-# Lines starting with # are comments. The manual and the options are not used yet. A ROM in roms/
+# Lines starting with # are comments. The options are not used yet. A ROM in roms/
 # that the CSV does not list is still built in, after the listed ones, named after its file.
 #
 # Writes into src/generated/:
@@ -15,6 +15,10 @@
 #
 # Pictures: a PNG is scaled to fit 64x64 and dithered to the NES palette (tools/nesimage.py).
 # A missing picture is a warning; the menu then shows an empty square.
+#
+# Manuals: teletext style pages of 32x25 characters with phpBB style tags, converted to a cut-down
+# VT100 form for the device by tools/nesmanual.py (the format is described there). A missing
+# manual is a warning; the menu then has none to show.
 #
 # An optional "<rom name>.cfg" next to a ROM (same name, .cfg instead of .nes) is built in as its
 # config text (save = yes/no, region = ntsc/pal).
@@ -33,6 +37,7 @@ paletteH = os.path.join(project, "src", "nes", "palette.h")
 
 sys.path.insert(0, os.path.join(project, "tools"))
 import nesimage
+import nesmanual
 
 
 def warn(msg):
@@ -49,6 +54,24 @@ def cString(s):
             out += "\\" + ch
         elif ch == "\n":
             out += "\\n"
+        elif b < 32 or b > 126:
+            out += '\\x%02x""' % b
+        else:
+            out += ch
+    return '"' + out + '"'
+
+
+def cBytes(data):
+    # a C string literal of raw bytes
+    out = ""
+    for b in data:
+        ch = chr(b)
+        if ch == "\\" or ch == '"':
+            out += "\\" + ch
+        elif ch == "\n":
+            out += "\\n"
+        elif ch == "\f":
+            out += "\\f"
         elif b < 32 or b > 126:
             out += '\\x%02x""' % b
         else:
@@ -163,15 +186,27 @@ for i, g in enumerate(games):
         cpp.append("};")
         picRef = "picture_%d" % i
 
+    manualRef = "nullptr"
+    if g["manual"]:
+        mpath = os.path.join(romDir, g["manual"])
+        if os.path.exists(mpath):
+            data, pages = nesmanual.convert(mpath, g["manual"], warn)
+            if pages:
+                manualRef = cBytes(data)
+            else:
+                warn("%s: manual %s has no pages" % (g["file"], g["manual"]))
+        else:
+            warn("%s: manual %s not found" % (g["file"], g["manual"]))
+
     cfgPath = os.path.join(romDir, g["file"][:-4] + ".cfg")
     cfg = "nullptr"
     if os.path.exists(cfgPath):
         with open(cfgPath, encoding="utf-8", errors="replace") as f:
             cfg = cString(f.read())
 
-    entries.append("  { %s, %s, nesrom_%d, %d, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, cfg))
+    entries.append("  { %s, %s, nesrom_%d, %d, %s, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, manualRef, cfg))
 
-cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, nullptr, nullptr },"])
+cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, nullptr, nullptr, nullptr },"])
 cpp += ["};", "", "const int g_romCount = %d;" % len(games), ""]
 
 writeIfChanged(os.path.join(outDir, "roms.S"), "\n".join(asm) + "\n")

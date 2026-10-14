@@ -1,0 +1,33 @@
+[PAGESTART=1]
+The Legend of Zelda \[PAL\]
+
+[color=red]Story
+[color=white]The kingdom of Hyrule has fallen
+into chaos after the evil Prince
+of Darkness, Ganon, invaded and
+stole the Triforce of Power.
+To protect the land, 
+Princess Zelda split the
+Triforce of Wisdom into eight
+fragments and hid them across
+secret underworld dungeons
+before being captured.
+A young traveler named Link 
+comes to the aid of Zelda's
+nursemaid, Impa, and embarks on 
+a dangerous quest across Hyrule.
+To defeat Ganon and rescue the
+Princess, Link must conquer each
+dungeon, recover all eight 
+fragments, and assemble 
+the Triforce of Wisdom.
+[PAGEEND]
+[PAGESTART=2]
+[color=red]Movement
+[color=white]TDB, how to move
+Link goes here.
+[PAGEEND]
+[PAGESTART=3]
+[color=red]Hints
+[color=white]TDB, hints go here
+[PAGEEND]

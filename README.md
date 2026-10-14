@@ -63,7 +63,7 @@ Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up. In the 
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM and `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -76,7 +76,7 @@ build and generates `src/generated/` (an `.incbin` per ROM and the index the ROM
 "Legend of Zelda, The (Europe).nes","The Legend of Zelda","zelda1.png","zelda1.txt"
 ```
 
-File name, name shown in the menu, picture, manual, options (the last two are not used yet). A ROM
+File name, name shown in the menu, picture, manual, options (not used yet). A ROM
 the CSV does not list is still built in, at the end under its file name, with a warning; a
 malformed line (a missing quote, say) is reported and skipped.
 
@@ -84,6 +84,25 @@ The picture is a PNG in `roms/`, scaled to fit 64x64 (aspect kept, black bars) a
 NES palette by `tools/nesimage.py` (plain Python, no Pillow needed). Converted pictures are cached in
 `src/generated/pics/`. A missing picture is a build warning and an empty square in the menu.
 `python3 tools/nesimage.py picture.png preview.ppm` shows what a picture will look like.
+
+The manual is a text file in `roms/` of teletext style pages, 32 columns by 25 lines, opened with M
+or Tab in the menu (Left/Right turn the pages, Esc goes back):
+
+```
+[PAGESTART=1]
+The Legend of Zelda \[PAL\]
+
+[color=red]Story
+[color=white]The kingdom of Hyrule has fallen
+[PAGEEND]
+```
+
+`[color=...]` (black red green yellow blue magenta cyan white) lasts until the next one; every page
+starts in white. `\[`, `\]` and `\\` are literal brackets and backslashes. A line that holds only
+tags gives no line on the screen. Longer lines and pages are cut with a build warning, nothing is
+wrapped. Umlauts work (the font is code page 437). On the device it is stored as a cut-down VT100
+form (see `tools/nesmanual.py`); `python3 tools/nesmanual.py roms/zelda1.txt` previews a manual in
+the terminal with its colours and warnings.
 Constant data in flash is mapped into the address space through the cache, so the emulator reads
 a ROM in place. Nothing is copied to RAM, which a 128 KB game would not fit into anyway, and
 nothing is written to flash at runtime. Changing the games means rebuilding and flashing.

@@ -11,10 +11,18 @@ struct RomBlob {
   uint8_t const * data;       // in flash, mapped through the cache
   size_t          size;
   uint8_t const * picture;    // PICTURE_SIZE x PICTURE_SIZE NES colour numbers, or nullptr
+  char const *    manual;     // pages, or nullptr (format below)
   char const *    config;     // contents of the optional <name>.cfg next to it, or nullptr
 };
 
 static constexpr int PICTURE_SIZE = 64;
+
+// Manuals: teletext style pages of MANUAL_COLS x MANUAL_ROWS characters (tools/nesmanual.py).
+// '\n' ends a line, '\f' starts the next page, ESC followed by '0'-'7' sets the colour (ANSI
+// order: black red green yellow blue magenta cyan white); every page starts in white. The other
+// bytes are characters of the font's code page 437.
+static constexpr int MANUAL_COLS = 32;
+static constexpr int MANUAL_ROWS = 25;
 
 extern const RomBlob g_roms[];
 extern const int     g_romCount;

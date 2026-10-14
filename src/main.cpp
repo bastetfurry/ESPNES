@@ -158,8 +158,8 @@ static void listRoms()
 {
   Serial.println("ROMs (send the number over serial to start one):");
   for (int i = 0; i < g_romCount; ++i)
-    Serial.printf("  %d: %s (%s, %u bytes%s)\n", i, g_roms[i].title, g_roms[i].name, (unsigned) g_roms[i].size,
-                  g_roms[i].picture ? ", picture" : "");
+    Serial.printf("  %d: %s (%s, %u bytes%s%s)\n", i, g_roms[i].title, g_roms[i].name, (unsigned) g_roms[i].size,
+                  g_roms[i].picture ? ", picture" : "", g_roms[i].manual ? ", manual" : "");
 }
 
 
@@ -217,7 +217,7 @@ static void drawMenu(int selected, int top, int visible, char const * message)
     cv.drawText(8, 210, message);
   }
   cv.setPenColor(Color::BrightBlack);
-  cv.drawText(4, 222, "Up/Down Enter:start  L/R:TV");
+  cv.drawText(4, 222, "Enter:play L/R:TV M/Tab:manual");
   cv.drawText(4, 231, "Esc=list F1=reset F2/F3=vol");
   cv.waitCompletion();
 
@@ -229,6 +229,111 @@ static void drawMenu(int selected, int top, int visible, char const * message)
       for (int x = 0; x < PICTURE_SIZE; ++x)
         line[(PIC_X + x) ^ 2] = s_raw[pic[y * PICTURE_SIZE + x] & 0x3f];   // the DMA's byte order
     }
+  }
+}
+
+
+// The manual viewer: a teletext style page per screen, Left/Right or Page Up/Down to turn pages,
+// Esc (or M, Tab) to go back. Over serial: n(ext), p(revious), x to leave.
+static void showManual(RomBlob const & rom)
+{
+  static const Color colours[8] = { Color::Black, Color::BrightRed, Color::BrightGreen, Color::BrightYellow,
+                                    Color::BrightBlue, Color::BrightMagenta, Color::BrightCyan, Color::BrightWhite };
+  // the pages, found by their form feeds
+  std::vector<char const *> pages;
+  pages.push_back(rom.manual);
+  for (char const * p = rom.manual; *p; ++p)
+    if (*p == '\f')
+      pages.push_back(p + 1);
+
+  fabgl::Canvas & cv = *s_canvas;
+  auto kb = PS2.keyboard();
+  int page = 0;
+  for (;;) {
+    cv.setBrushColor(Color::Black);
+    cv.clear();
+    cv.setPenColor(Color::BrightCyan);
+    String title = rom.title;
+    if (title.length() > 26)
+      title = title.substring(0, 26);
+    cv.drawText(0, 4, title.c_str());
+    char num[12];
+    snprintf(num, sizeof(num), "%d/%d", page + 1, (int) pages.size());
+    cv.setPenColor(Color::BrightYellow);
+    cv.drawText(256 - strlen(num) * 8, 4, num);
+
+    // the page: runs of one colour at a time
+    char const * p = pages[page];
+    Color colour = Color::BrightWhite;
+    char run[MANUAL_COLS + 1];
+    for (int row = 0; row < MANUAL_ROWS && *p && *p != '\f'; ++row) {
+      int col = 0, len = 0, runCol = 0;
+      for (; *p && *p != '\n' && *p != '\f'; ++p) {
+        if (*p == 0x1b && p[1]) {
+          if (len) {
+            run[len] = 0;
+            cv.setPenColor(colour);
+            cv.drawText(runCol * 8, 20 + row * 8, run);
+            len = 0;
+          }
+          colour = colours[(p[1] - '0') & 7];
+          ++p;
+          continue;
+        }
+        if (col < MANUAL_COLS) {
+          if (!len)
+            runCol = col;
+          run[len++] = *p;
+          ++col;
+        }
+      }
+      if (len) {
+        run[len] = 0;
+        cv.setPenColor(colour);
+        cv.drawText(runCol * 8, 20 + row * 8, run);
+      }
+      if (*p == '\n')
+        ++p;
+    }
+
+    cv.setPenColor(Color::BrightBlack);
+    cv.drawText(0, 230, "L/R:page  Esc:back");
+    cv.waitCompletion();
+
+    // keys
+    int step = 0;
+    while (!step) {
+      if (Serial.available()) {
+        int c = Serial.read();
+        if (c == 'x')
+          return;
+        step = c == 'n' ? 1 : c == 'p' ? -1 : 0;
+        continue;
+      }
+      if (!kb->virtualKeyAvailable()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+      bool down;
+      auto vk = kb->getNextVirtualKey(&down, 0);
+      if (!down)
+        continue;
+      switch (vk) {
+        case fabgl::VK_ESCAPE: case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
+          return;
+        case fabgl::VK_RIGHT: case fabgl::VK_KP_RIGHT: case fabgl::VK_PAGEDOWN: case fabgl::VK_KP_PAGEDOWN:
+        case fabgl::VK_DOWN:  case fabgl::VK_KP_DOWN:  case fabgl::VK_SPACE:
+          step = 1;
+          break;
+        case fabgl::VK_LEFT:  case fabgl::VK_KP_LEFT:  case fabgl::VK_PAGEUP:   case fabgl::VK_KP_PAGEUP:
+        case fabgl::VK_UP:    case fabgl::VK_KP_UP:
+          step = -1;
+          break;
+        default:
+          break;
+      }
+    }
+    page = std::max(0, std::min((int) pages.size() - 1, page + step));
   }
 }
 
@@ -250,10 +355,26 @@ static int chooseRom(char const * message)
     bool down = false;
     fabgl::VirtualKey vk = fabgl::VK_NONE;
     while (vk == fabgl::VK_NONE) {
+      // over serial: a number starts that game, m and a number shows its manual
       if (Serial.available()) {
+        int c = Serial.peek();
+        if (c != 'm' && !isdigit(c)) {
+          Serial.read();          // stray characters (line ends) would read as game 0
+          continue;
+        }
+        bool manual = c == 'm';
+        if (manual)
+          Serial.read();
         int idx = Serial.parseInt();
-        if (idx >= 0 && idx < n)
-          return selected = idx;
+        if (idx >= 0 && idx < n) {
+          selected = idx;
+          if (!manual)
+            return idx;
+          if (g_roms[idx].manual)
+            showManual(g_roms[idx]);
+          vk = fabgl::VK_NONE;
+          break;
+        }
       }
       if (kb->virtualKeyAvailable())
         vk = kb->getNextVirtualKey(&down, 0);
@@ -264,6 +385,12 @@ static int chooseRom(char const * message)
       continue;
     message = nullptr;
     switch (vk) {
+      case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
+        if (n && g_roms[selected].manual)
+          showManual(g_roms[selected]);
+        else
+          message = "No manual for this game";
+        break;
       case fabgl::VK_UP:       case fabgl::VK_KP_UP:       if (n) selected = (selected + n - 1) % n; break;
       case fabgl::VK_DOWN:     case fabgl::VK_KP_DOWN:     if (n) selected = (selected + 1) % n; break;
       case fabgl::VK_PAGEUP:   case fabgl::VK_KP_PAGEUP:   selected = std::max(0, selected - visible); break;

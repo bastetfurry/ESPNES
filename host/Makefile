@@ -3,7 +3,7 @@
 #   make test       runs nestest against its golden log
 
 CXX      ?= g++
-CXXFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter -std=c++17
+CXXFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter -std=c++17 -DNES_TRACE
 
 SRC = main.cpp $(wildcard ../src/nes/*.cpp)
 HDR = $(wildcard ../src/nes/*.h)

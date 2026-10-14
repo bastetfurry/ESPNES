@@ -9,6 +9,12 @@
 #include "ppu.h"
 #include "apu.h"
 
+#ifdef NES_TRACE
+class Nes;
+// host debugging: called for every write to $2000-$401F (built with -DNES_TRACE only)
+extern void (*nesTraceWrite)(Nes & nes, uint16_t addr, uint8_t value);
+#endif
+
 // controller bits, in the order the shift register reports them
 enum : uint8_t {
   BTN_A = 0x01, BTN_B = 0x02, BTN_SELECT = 0x04, BTN_START = 0x08,
@@ -56,6 +62,16 @@ public:
   // profiling, in CPU clock cycles (0 on the host), of the last drawn frame
   uint32_t   profWait;                  // runFrame waiting for the drawing to finish
   uint32_t   profDraw;                  // drawQueuedLines busy drawing (not waiting for lines)
+
+  // PPU position of the CPU's current cycle (for tracing)
+  int currentLine(int * dot) const
+  {
+    int32_t units = cpu.cycles * m_unitsPerCycle + m_baseUnits;
+    if (dot)
+      *dot = (units % UNITS_PER_LINE) / 5;
+    return units / UNITS_PER_LINE;
+  }
+  uint32_t frameCount;
 
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }

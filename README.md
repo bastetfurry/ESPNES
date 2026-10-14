@@ -1,7 +1,7 @@
 # ESPNES
 
 A NES emulator for ESP32 boards with FabGL's VGA and PS/2 wiring, built for an ESP32-PICO-D4
-board: 4 MB of flash on the chip, **no PSRAM, no SD card**. ROMs live in the SPIFFS partition.
+board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built into the firmware.
 
 ## Status
 
@@ -10,7 +10,8 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. ROMs live in the SPI
 - **PPU:** scanline renderer with the loopy scroll model, so `$2005`/`$2006` splits work; sprite 0
   hit is timed to the dot, 8 sprites per line, 8x16 sprites, left column clipping, greyscale.
   NTSC (262 lines, 3 dots per CPU cycle) and PAL (312 lines, 3.2 dots) timing.
-- **Mappers:** 0 (NROM). The cartridge layer works through bank pointer tables, ready for MMCs.
+- **Mappers:** 0 (NROM), 2 (UxROM). The cartridge layer works through bank pointer tables, so a
+  mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the
   DAC (GPIO 25); each sample averages the channels over its time span, so high notes do not alias
@@ -64,22 +65,33 @@ Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up. In the 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
 that ROM, `s` taps Start and `q` leaves the game. Frame timings are printed every 5 seconds.
 
+## ROMs
+
+Every `.nes` file in `roms/` is built into the firmware: `tools/embed_roms.py` runs before each
+build and generates `src/generated/` (an `.incbin` per ROM and the index the ROM list shows).
+Constant data in flash is mapped into the address space through the cache, so the emulator reads
+a ROM in place. Nothing is copied to RAM, which a 128 KB game would not fit into anyway, and
+nothing is written to flash at runtime. Changing the games means rebuilding and flashing.
+
+Reading PRG from flash through the cache costs nothing measurable (SMB: 8.7 ms per frame either
+way). The firmware partition is 3.4 MB, so about 2.7 MB of ROMs fit next to the code.
+
 ## Build & flash
 
 ```sh
-pio run -t upload       # firmware (~/.platformio/penv/bin/pio if pio is not on the PATH)
-pio run -t uploadfs     # everything in roms/ into SPIFFS (2.4 MB)
+pio run -t upload       # firmware with the ROMs (~/.platformio/penv/bin/pio if pio is not on the PATH)
 pio device monitor
 ```
 
-SPIFFS has no directories and names are limited to 31 characters, so keep ROM file names short.
+The 512 KB SPIFFS partition is formatted on the first boot and reserved for save games.
 
 ## Layout
 
 - `src/nes/` the emulator core, plain C++ without ESP32 dependencies
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
 - `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
-  thread like the ESP32 build), sound to WAV (`wav=file.wav`), a benchmark
+  thread like the ESP32 build), sound to WAV (`wav=file.wav`), a trace of PPU register writes per scanline and dot
+  (`trace=FROM-TO` frames), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
-- `roms/` packed into SPIFFS by `uploadfs`
+- `roms/` built into the firmware by `tools/embed_roms.py`
 - `testroms/` test ROMs for the host harness (nestest)

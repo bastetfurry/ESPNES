@@ -79,10 +79,50 @@ public:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 2: UxROM (UNROM, UOROM). A switchable 16 KB PRG bank at $8000, the last bank fixed at
+// $C000, 8 KB CHR RAM, fixed mirroring. Real boards have bus conflicts (the written value is ANDed
+// with the ROM byte at the address); games avoid them by writing to a byte holding the same
+// value, so they are not emulated.
+
+class MapperUxROM : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    Cart const & c = m_nes.cart();
+    m_banks = c.info.prgSize / 0x4000;
+    select(0);
+    uint8_t const * last = c.prg + (m_banks - 1) * 0x4000;
+    m_nes.mapPrg8K(2, last);
+    m_nes.mapPrg8K(3, last + 0x2000);
+    m_nes.mapChr8K(0);
+    m_nes.setMirroring(c.info.mirroring);
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    select(value);
+  }
+
+private:
+  void select(int bank)
+  {
+    uint8_t const * p = m_nes.cart().prg + (bank % m_banks) * 0x4000;
+    m_nes.mapPrg8K(0, p);
+    m_nes.mapPrg8K(1, p + 0x2000);
+  }
+
+  int m_banks;
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
     case 0:  return new MapperNROM(nes);
+    case 2:  return new MapperUxROM(nes);
     default: return nullptr;
   }
 }
@@ -90,5 +130,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number == 0;
+  return number == 0 || number == 2;
 }

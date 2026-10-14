@@ -5,3 +5,5 @@ compile_commands.json
 # commercial ROMs stay local; homebrew/test ROMs can be added with git add -f
 roms/*.nes
 *.wav
+src/generated/
+tools/psramtest/

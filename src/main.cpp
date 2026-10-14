@@ -27,6 +27,7 @@
 
 #include "nes/nes.h"
 #include "nes/palette.h"
+#include "romindex.h"
 
 
 static fabgl::VGAController   VGA;
@@ -148,34 +149,14 @@ static void pushSamples()
 
 enum class RegionChoice { Auto, NTSC, PAL };
 
-struct RomEntry {
-  String name;     // without the leading slash
-  size_t size;
-};
-
-static std::vector<RomEntry> s_roms;
-static RegionChoice          s_regionChoice = RegionChoice::Auto;
+static RegionChoice s_regionChoice = RegionChoice::Auto;
 
 
-static void scanRoms()
+static void listRoms()
 {
-  s_roms.clear();
-  File root = SPIFFS.open("/");
-  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-    String name = f.name();
-    if (name.startsWith("/"))
-      name = name.substring(1);
-    String lower = name;
-    lower.toLowerCase();
-    if (lower.endsWith(".nes"))
-      s_roms.push_back({ name, f.size() });
-  }
-  std::sort(s_roms.begin(), s_roms.end(), [](RomEntry const & a, RomEntry const & b) {
-    return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
-  });
   Serial.println("ROMs (send the number over serial to start one):");
-  for (int i = 0; i < (int)s_roms.size(); ++i)
-    Serial.printf("  %d: %s (%u bytes)\n", i, s_roms[i].name.c_str(), (unsigned) s_roms[i].size);
+  for (int i = 0; i < g_romCount; ++i)
+    Serial.printf("  %d: %s (%u bytes)\n", i, g_roms[i].name, (unsigned) g_roms[i].size);
 }
 
 
@@ -194,21 +175,23 @@ static void drawMenu(int selected, int top, int visible, char const * message)
   snprintf(buf, sizeof(buf), "TV: %s", regionNames[(int)s_regionChoice]);
   cv.drawText(256 - 8 - strlen(buf) * 8, 4, buf);
 
-  if (s_roms.empty()) {
+  if (!g_romCount) {
     cv.setPenColor(Color::BrightRed);
-    cv.drawText(8, 40, "No .nes files in SPIFFS.");
+    cv.drawText(8, 40, "No ROMs built in.");
     cv.setPenColor(Color::White);
-    cv.drawText(8, 56, "Put ROMs in roms/ and run");
-    cv.drawText(8, 68, "pio run -t uploadfs");
+    cv.drawText(8, 56, "Put .nes files in roms/ and");
+    cv.drawText(8, 68, "run pio run -t upload");
   }
-  for (int i = 0; i < visible && top + i < (int)s_roms.size(); ++i) {
+  for (int i = 0; i < visible && top + i < g_romCount; ++i) {
     int idx = top + i;
     int y = 20 + i * 9;
     if (idx == selected) {
       cv.setBrushColor(Color::Blue);
       cv.fillRectangle(0, y - 1, 255, y + 7);
     }
-    String n = s_roms[idx].name;
+    String n = g_roms[idx].name;
+    if (n.endsWith(".nes") || n.endsWith(".NES"))
+      n = n.substring(0, n.length() - 4);
     if (n.length() > 31)
       n = n.substring(0, 31);
     cv.setPenColor(idx == selected ? Color::BrightWhite : Color::White);
@@ -233,14 +216,14 @@ static int chooseRom(char const * message)
   static int selected = 0;
   const int visible = 20;
   auto kb = PS2.keyboard();
-  scanRoms();
-  if (selected >= (int)s_roms.size())
+  listRoms();
+  if (selected >= g_romCount)
     selected = 0;
   for (;;) {
-    int top = std::max(0, std::min(selected - visible / 2, (int)s_roms.size() - visible));
+    int top = std::max(0, std::min(selected - visible / 2, g_romCount - visible));
     drawMenu(selected, top, visible, message);
     // a number on the serial console starts that ROM, for testing without a keyboard
-    int n = s_roms.size();
+    int n = g_romCount;
     bool down = false;
     fabgl::VirtualKey vk = fabgl::VK_NONE;
     while (vk == fabgl::VK_NONE) {
@@ -282,9 +265,6 @@ static int chooseRom(char const * message)
 ///////////////////////////////////////////////////////////////////////////////
 // running a game
 
-static uint8_t * s_romImage = nullptr;
-
-
 static Region guessRegion(String const & name)
 {
   if (s_regionChoice == RegionChoice::NTSC)
@@ -302,29 +282,15 @@ static Region guessRegion(String const & name)
 
 
 // Returns nullptr or an error message.
-static char const * loadRom(RomEntry const & rom)
+static char const * loadRom(RomBlob const & rom)
 {
-  nes.eject();
-  free(s_romImage);
-  s_romImage = nullptr;
-
-  File f = SPIFFS.open("/" + rom.name, "r");
-  if (!f)
-    return "Cannot open the file";
-  s_romImage = (uint8_t *) malloc(rom.size);
-  if (!s_romImage)
-    return "ROM too big for the free RAM";
-  size_t got = f.read(s_romImage, rom.size);
-  f.close();
-  if (got != rom.size)
-    return "Read error";
-
-  if (char const * err = nes.insert(s_romImage, rom.size))
+  // the image stays in flash: the cartridge reads it in place
+  if (char const * err = nes.insert(rom.data, rom.size))
     return err;
   nes.setRegion(guessRegion(rom.name));
   nes.powerOn();
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s, free heap %u\n",
-                rom.name.c_str(), nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
+                rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
                 nes.cart().info.chrSize / 1024, nes.cart().info.chrSize ? "" : " (RAM)",
                 nes.region() == Region::PAL ? "PAL" : "NTSC", (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT));
   return nullptr;
@@ -484,8 +450,9 @@ void setup()
   s_canvas->setGlyphOptions(GlyphOptions().FillBackground(true));
 
   char const * message = nullptr;
-  if (!SPIFFS.begin(false))
-    message = "SPIFFS not mounted (uploadfs?)";
+  // for save games later; an unformatted partition is formatted on the first boot
+  if (!SPIFFS.begin(true))
+    Serial.println("SPIFFS could not be mounted");
 
   Serial.printf("Free heap: %u bytes, largest block %u\n",
                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -493,7 +460,7 @@ void setup()
 
   for (;;) {
     int idx = chooseRom(message);
-    message = loadRom(s_roms[idx]);
+    message = loadRom(g_roms[idx]);
     if (message)
       continue;
     s_canvas->waitCompletion();

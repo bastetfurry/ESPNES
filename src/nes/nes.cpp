@@ -94,6 +94,7 @@ void Nes::powerOn()
   m_mapper->reset();
   m_baseUnits = 0;
   cpu.cycles  = 0;
+  frameCount  = 0;
   cpu.reset();
 }
 
@@ -160,8 +161,16 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
 }
 
 
+#ifdef NES_TRACE
+void (*nesTraceWrite)(Nes & nes, uint16_t addr, uint8_t value);
+#endif
+
 NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 {
+#ifdef NES_TRACE
+  if (nesTraceWrite && addr < 0x4020)
+    nesTraceWrite(*this, addr, value);
+#endif
   if (addr < 0x4000) {
     ppu.writeRegister(addr, value);
     return;
@@ -288,5 +297,6 @@ NES_HOT void Nes::runFrame(bool draw)
   int32_t c = (frameUnits - m_baseUnits) / m_unitsPerCycle;
   cpu.cycles -= c;
   apu.rebase(c);
+  ++frameCount;
   m_baseUnits += c * m_unitsPerCycle - frameUnits;
 }

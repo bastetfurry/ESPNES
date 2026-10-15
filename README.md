@@ -57,26 +57,69 @@ are emulated at 50 frames per second on the 60 Hz signal.
 
 ## Keys
 
-| NES    | Keyboard          |
-|--------|-------------------|
-| D-pad  | arrow keys        |
-| A      | Ctrl              |
-| B      | Alt               |
-| Select | Shift             |
-| Start  | Space             |
+| NES    | Player 1   | Player 2 (numpad) |
+|--------|------------|-------------------|
+| D-pad  | arrow keys | 8 4 5 6           |
+| A      | Ctrl       | .                 |
+| B      | Alt        | 0                 |
+| Select | Shift      | /                 |
+| Start  | Space      | *                 |
+| Mic    |            | +                 |
 
-These are the defaults. K in the ROM list opens the key mapper: a drawn pad where the button being
-set blinks; press a key for each button in turn (Up, Down, Left, Right, Select, Start, B, A). A key
-another button already has swaps with it, Esc cancels. The keys are the same for all games and
-kept in SPIFFS (`/keys.cfg`), written only when they change. Left and right Ctrl/Alt/Shift count
-as one key, a letter works with Shift held, and the numpad counts as the arrow/navigation keys.
-Esc, F1-F3 and F10 cannot be used.
+These are the defaults. K in the ROM list opens the key mapper: pick the player (1 or 2), then a
+drawn pad shows the button being set blinking; press a key for each button in turn (Up, Down,
+Left, Right, Select, Start, B, A, and for player 2 the Mic). A key another button (of either
+player) already has swaps with it, Esc cancels. The keys are the same for all games and kept in
+SPIFFS (`/keys.cfg`), written only when they change. Left and right Ctrl/Alt/Shift count as one
+key, a letter works with Shift held, and a numpad key is the same with or without Num Lock (but
+not the same as the arrow keys). Esc, F1-F3 and F10 cannot be used.
 
-Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up, F10 switches cheats. In the list, Left/Right picks the TV system
+Mic is the Famicom's microphone on the second pad: while it is held, `$4016` bit 2 reads noise,
+like someone talking into it (Famicom games use it, e.g. the Japanese Zelda's Pols Voice).
+
+### Real pads
+
+NES pads can be wired to free GPIOs: latch and clock shared by both pads, a data line each. Set
+the pins at `PAD_LATCH_GPIO`, `PAD_CLOCK_GPIO` and `PAD_DATA_GPIO` in `src/main.cpp` (-1 = not
+connected). Real pads and keys work at the same time.
+
+- Power the pads from **3.3 V**, not 5 V: the pad's 4021 runs on it, and its data line then
+  cannot put 5 V on the ESP32.
+- The data lines need a pull-up, so an unplugged pad reads as no buttons: the firmware turns on
+  the internal one. GPIO 34-39 have none and need an external one (10 kΩ to 3.3 V).
+- Taken: VGA 4, 5, 15, 18, 19, 21, 22, 23; PS/2 keyboard 32, 33; sound 25. Avoid the strapping
+  pins 0, 2 and 12. Left as candidates (on a TTGO VGA32 style board): 13 and 14 (the SD slot's,
+  free without a card), 26 and 27 (the second PS/2 port, if nothing is plugged in), and 34-39
+  for data lines only (inputs, external pull-up).
+- NES port, pin 1 GND, 2 clock, 3 latch, 4 data, 7 +V (pins 5 and 6 are the Zapper's); check
+  with a meter, clones and extension cables differ.
+
+## Savestates
+
+Esc pauses the game and shows the ROM list, with a green arrow at the paused game. Enter on it
+carries on where it was; starting or loading another game ends it. Nothing is copied for that: the
+console just waits.
+
+S in the list saves the paused game's state in slot 1 or 2, L loads the selected game from one.
+Each game has two slots; under the picture the list shows which hold a state. A state is 1-12 KB
+(SMB 1.5 KB, Zelda 12-14 KB): the console's RAM, nametables, sprites and palette, the cartridge's
+RAM and CHR RAM, and the registers, compressed with a small LZ that needs no buffer
+(`src/nes/state.h`). They are files in SPIFFS next to the saves (`.st1`, `.st2`); a save is
+refused when it would leave less than 48 KB of SPIFFS free, so the file system keeps room to
+work. A new state is written to a new file first, so a failed save keeps the old one.
+
+A state includes the battery backed RAM: after loading one, leaving the game writes that into the
+game's save file, as an emulator does. States belong to this version of the emulator; one made by
+a version with a different state format is refused (`STATE_VERSION` in `src/nes/nes.cpp`).
+
+`host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
+same frames again: picture, RAM and CPU must come out the same (all games here do).
+
+Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volume down/up, F10 switches cheats. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `k` opens the key mapper (a letter, digit or space sets the next button, `^` takes the defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
 
 ## ROMs
 

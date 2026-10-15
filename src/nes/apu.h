@@ -11,6 +11,7 @@
 #include "cart.h"
 
 class Nes;
+class StateIO;
 
 class Apu {
 public:
@@ -45,6 +46,9 @@ public:
   void            takeSamples()            { m_sampleCount = 0; }
 
   static constexpr int MAX_SAMPLES = 1024;   // per frame; 48 kHz at 50 fps is 960
+
+  // savestates (see state.h); the samples not yet taken are dropped, the sample rate is kept
+  void state(StateIO & io);
 
 private:
 

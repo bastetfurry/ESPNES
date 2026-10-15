@@ -2,6 +2,7 @@
 
 #include "cart.h"
 #include "nes.h"
+#include "state.h"
 
 
 char const * parseRom(uint8_t const * data, size_t size, Cart * cart)
@@ -78,6 +79,8 @@ public:
     m_nes.mapChr8K(0);
     m_nes.setMirroring(c.info.mirroring);
   }
+
+  void restore() override  { reset(); }
 };
 
 
@@ -95,7 +98,14 @@ public:
   {
     Cart const & c = m_nes.cart();
     m_banks = c.info.prgSize / 0x4000;
-    select(0);
+    m_bank = 0;
+    restore();
+  }
+
+  void restore() override
+  {
+    Cart const & c = m_nes.cart();
+    select(m_bank);
     uint8_t const * last = c.prg + (m_banks - 1) * 0x4000;
     m_nes.mapPrg8K(2, last);
     m_nes.mapPrg8K(3, last + 0x2000);
@@ -103,20 +113,24 @@ public:
     m_nes.setMirroring(c.info.mirroring);
   }
 
+  void state(StateIO & io) override  { io.pod(m_bank); }
+
   void writeRegister(uint16_t addr, uint8_t value) override
   {
     select(value);
   }
 
 private:
-  void select(int bank)
+  void select(uint8_t bank)
   {
+    m_bank = bank;
     uint8_t const * p = m_nes.cart().prg + (bank % m_banks) * 0x4000;
     m_nes.mapPrg8K(0, p);
     m_nes.mapPrg8K(1, p + 0x2000);
   }
 
-  int m_banks;
+  int     m_banks;
+  uint8_t m_bank;
 };
 
 
@@ -140,6 +154,13 @@ public:
     m_chr0 = m_chr1 = m_prg = 0;
     update();
   }
+
+  void state(StateIO & io) override
+  {
+    io.pod(m_shift); io.pod(m_count); io.pod(m_control); io.pod(m_chr0); io.pod(m_chr1); io.pod(m_prg);
+  }
+
+  void restore() override  { update(); }
 
   void writeRegister(uint16_t addr, uint8_t value) override
   {
@@ -247,7 +268,21 @@ public:
     m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
     Cart const & c = m_nes.cart();
     m_fourScreen = c.info.mirroring == Mirroring::FourScreen;
+    m_mirroring = c.info.mirroring;
     m_nes.setMirroring(c.info.mirroring);
+    updatePrg();
+    updateChr();
+  }
+
+  void state(StateIO & io) override
+  {
+    io.pod(m_select); io.pod(m_regs); io.pod(m_irqLatch); io.pod(m_irqCounter);
+    io.pod(m_irqReload); io.pod(m_irqEnabled); io.pod(m_mirroring);
+  }
+
+  void restore() override
+  {
+    m_nes.setMirroring(m_fourScreen ? Mirroring::FourScreen : m_mirroring);
     updatePrg();
     updateChr();
   }
@@ -268,7 +303,7 @@ public:
       case 0xa000:
         // odd: PRG RAM protect, not emulated (the RAM stays enabled and writable)
         if (!odd && !m_fourScreen)
-          m_nes.setMirroring((value & 1) ? Mirroring::Horizontal : Mirroring::Vertical);
+          m_nes.setMirroring(m_mirroring = (value & 1) ? Mirroring::Horizontal : Mirroring::Vertical);
         break;
       case 0xc000:
         if (!odd)
@@ -338,6 +373,7 @@ private:
   uint8_t m_irqLatch, m_irqCounter;
   bool    m_irqReload, m_irqEnabled;
   bool    m_fourScreen;
+  Mirroring m_mirroring;
 };
 
 
@@ -355,7 +391,15 @@ public:
   {
     m_banks = m_nes.cart().info.prgSize / 0x8000;
     m_busConflicts = m_nes.cart().info.submapper == 2;
-    select(0);
+    m_value = 0;
+    restore();
+  }
+
+  void state(StateIO & io) override  { io.pod(m_value); }
+
+  void restore() override
+  {
+    select(m_value);
     m_nes.mapChr8K(0);
   }
 
@@ -369,14 +413,16 @@ public:
 private:
   void select(uint8_t value)
   {
+    m_value = value;
     uint8_t const * p = m_nes.cart().prg + ((value & 7) % m_banks) * 0x8000;
     for (int i = 0; i < 4; ++i)
       m_nes.mapPrg8K(i, p + i * 0x2000);
     m_nes.setMirroring((value & 0x10) ? Mirroring::SingleB : Mirroring::SingleA);
   }
 
-  int  m_banks;
-  bool m_busConflicts;
+  int     m_banks;
+  bool    m_busConflicts;
+  uint8_t m_value;
 };
 
 
@@ -394,12 +440,22 @@ public:
     Cart const & c = m_nes.cart();
     m_banks = c.info.prgSize / 0x4000;
     m_mirroringControl = c.info.submapper == 1;
-    select(0);
+    m_bank = 0;
+    m_mirroring = m_mirroringControl ? Mirroring::SingleA : c.info.mirroring;
+    restore();
+  }
+
+  void state(StateIO & io) override  { io.pod(m_bank); io.pod(m_mirroring); }
+
+  void restore() override
+  {
+    Cart const & c = m_nes.cart();
+    select(m_bank);
     uint8_t const * last = c.prg + (m_banks - 1) * 0x4000;
     m_nes.mapPrg8K(2, last);
     m_nes.mapPrg8K(3, last + 0x2000);
     m_nes.mapChr8K(0);
-    m_nes.setMirroring(m_mirroringControl ? Mirroring::SingleA : c.info.mirroring);
+    m_nes.setMirroring(m_mirroring);
   }
 
   void writeRegister(uint16_t addr, uint8_t value) override
@@ -407,19 +463,22 @@ public:
     if (addr >= 0xc000)
       select(value);
     else if (m_mirroringControl && (addr & 0xf000) == 0x9000)
-      m_nes.setMirroring((value & 0x10) ? Mirroring::SingleB : Mirroring::SingleA);
+      m_nes.setMirroring(m_mirroring = (value & 0x10) ? Mirroring::SingleB : Mirroring::SingleA);
   }
 
 private:
-  void select(int bank)
+  void select(uint8_t bank)
   {
+    m_bank = bank;
     uint8_t const * p = m_nes.cart().prg + (bank % m_banks) * 0x4000;
     m_nes.mapPrg8K(0, p);
     m_nes.mapPrg8K(1, p + 0x2000);
   }
 
-  int  m_banks;
-  bool m_mirroringControl;
+  int       m_banks;
+  bool      m_mirroringControl;
+  uint8_t   m_bank;
+  Mirroring m_mirroring;
 };
 
 
@@ -465,6 +524,22 @@ public:
     m_fillTile = m_fillAttr = 0;
     updateFill();
     m_nt = 0;
+    updatePrg();
+    updateChr();
+    updateNametables();
+  }
+
+  void state(StateIO & io) override
+  {
+    io.pod(m_prgMode); io.pod(m_chrMode); io.pod(m_exramMode); io.pod(m_prg); io.pod(m_chr);
+    io.pod(m_chrUpper); io.pod(m_lastSetB); io.pod(m_sprites8x16); io.pod(m_irqCompare);
+    io.pod(m_irqEnabled); io.pod(m_irqPending); io.pod(m_inFrame); io.pod(m_line);
+    io.pod(m_mulA); io.pod(m_mulB); io.pod(m_nt); io.pod(m_fillTile); io.pod(m_fillAttr); io.pod(m_exram);
+  }
+
+  void restore() override
+  {
+    updateFill();
     updatePrg();
     updateChr();
     updateNametables();

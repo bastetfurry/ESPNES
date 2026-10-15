@@ -113,6 +113,70 @@ void Nes::powerOn()
 }
 
 
+// The state's header: a format version (raise it whenever a state() function changes), then
+// what the console must look like for the state to fit.
+static constexpr uint32_t STATE_MAGIC = 0x53534e45;     // "ENSS"
+static constexpr uint16_t STATE_VERSION = 1;
+
+bool Nes::state(StateIO & io)
+{
+  uint32_t magic = STATE_MAGIC;
+  uint16_t version = STATE_VERSION, mapper = m_cart.info.mapper;
+  uint8_t  layout = (m_chrRam ? 1 : 0) | (m_fourScreenRam ? 2 : 0);
+  Region   region = m_region;
+  io.pod(magic); io.pod(version); io.pod(mapper); io.pod(layout); io.pod(region);
+  if (io.loading()) {
+    if (!io.ok() || magic != STATE_MAGIC || version != STATE_VERSION || mapper != m_cart.info.mapper ||
+        layout != ((m_chrRam ? 1 : 0) | (m_fourScreenRam ? 2 : 0)) || (region != Region::NTSC && region != Region::PAL))
+      return false;
+    setRegion(region);
+  }
+
+  cpu.state(io);
+  ppu.state(io);
+  apu.state(io);
+  m_mapper->state(io);
+  io.pod(ram);
+  io.bytes(prgRam, PRG_RAM_SIZE);
+  io.optional(m_chrRam, 0x2000, m_chrRam);
+  io.optional(m_fourScreenRam, 0x800, m_fourScreenRam);
+  io.pod(bus); io.pod(frameCount); io.pod(m_baseUnits); io.pod(m_parityBase);
+  io.pod(m_shift); io.pod(m_strobe); io.pod(m_micNoise);
+  return io.ok();
+}
+
+
+bool Nes::saveState(StateSink & sink)
+{
+  StateWriter w(sink);
+  state(w);
+  return w.finish();
+}
+
+
+char const * Nes::loadState(StateSource & source)
+{
+  StateReader r(source);
+  if (!state(r)) {
+    // a half loaded state is no state: start the game afresh
+    powerOn();
+    return r.ok() ? "Saved by another version, or another game" : "The state is damaged";
+  }
+  m_mapper->restore();
+  m_dmaArmed = INT32_MAX;
+  return nullptr;
+}
+
+
+// everything stored, with the worst case of the compression (a literal byte per 128) and the
+// registers generously
+size_t Nes::stateSizeLimit() const
+{
+  size_t raw = 2048 + 2048 + 32 + 256 + PRG_RAM_SIZE + (m_chrRam ? 0x2000 : 0) + (m_fourScreenRam ? 0x800 : 0) + 4096;
+  return raw + raw / 64;
+}
+
+
 void Nes::setCheats(Cheat const * list, int count)
 {
   m_cheatCount = count < MAX_CHEATS ? count : MAX_CHEATS;
@@ -281,7 +345,15 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
         bit = m_shift[port] & 1;
         m_shift[port] = (m_shift[port] >> 1) | 0x80;   // reads 1 after the eighth bit
       }
-      return bus = (bus & 0xe0) | bit;           // only bit 0 is driven, the rest is open bus
+      if (!port && m_mic) {
+        m_micNoise = (m_micNoise >> 1) ^ (-(m_micNoise & 1) & 0xb400);
+        bit |= m_micNoise & 4;
+      }
+#ifdef NES_TRACE
+      if (nesTraceRead)
+        nesTraceRead(*this, addr, (bus & 0xe0) | bit);
+#endif
+      return bus = (bus & 0xe0) | bit;           // only bit 0 (and the mic's bit 2) is driven, the rest is open bus
     }
     default:
       if (addr >= 0x4020) {

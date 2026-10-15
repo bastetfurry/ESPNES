@@ -17,6 +17,7 @@
 #include "platform.h"
 
 class Nes;
+class StateIO;
 
 class Ppu {
 public:
@@ -27,6 +28,9 @@ public:
   uint8_t readRegister(uint16_t addr);
   void    writeRegister(uint16_t addr, uint8_t value);
   void    oamDma(uint8_t const * page);
+
+  // savestates (see state.h); the bank pointers are the mapper's to restore
+  void    state(StateIO & io);
 
   // everything drawLine needs that the CPU may change during the frame
   struct LineState {

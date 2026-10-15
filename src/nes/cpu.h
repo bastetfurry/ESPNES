@@ -7,6 +7,7 @@
 #include "platform.h"
 
 class Nes;
+class StateIO;
 
 class Cpu {
 public:
@@ -39,6 +40,8 @@ public:
 
   uint8_t getP() const;
   void    setP(uint8_t p);
+
+  void state(StateIO & io);                        // savestates (see state.h)
 
   // registers, public for the test harness and the debugger
   uint16_t PC;

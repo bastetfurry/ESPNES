@@ -9,6 +9,7 @@
 #include "platform.h"
 
 class Nes;
+class StateIO;
 
 enum class Mirroring : uint8_t { Horizontal, Vertical, SingleA, SingleB, FourScreen };
 
@@ -44,6 +45,11 @@ public:
 
   // Sets up the bank pointers for power on.
   virtual void reset() = 0;
+
+  // Savestates (see state.h): state() saves or loads the registers, restore() then rebuilds the
+  // bank pointers (PRG, CHR, nametables) from them.
+  virtual void state(StateIO & io) { }
+  virtual void restore() = 0;
 
   // CPU write to $8000-$FFFF (mapper registers).
   virtual void writeRegister(uint16_t addr, uint8_t value) { }

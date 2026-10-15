@@ -12,9 +12,12 @@
 // by the I2S clock, so their rates drift apart a little: the APU's sample rate is nudged by the
 // buffer's fill level to keep it from running dry or overflowing.
 //
-// Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start (changed with K in the
-//       ROM list), Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off.
+// Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start; player 2 and the Famicom
+//       mic on the numpad (all changed with K in the ROM list); real NES pads on GPIOs (see
+//       PAD_LATCH_GPIO). Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off.
 // In the ROM list, G edits the selected game's Game Genie / Action Replay codes.
+// Esc pauses the game and shows the ROM list; Enter on the paused game carries on, S saves its
+// state in one of two slots per game, L loads one (see "savestates").
 // Serial console: a number starts that ROM from the list, 'k' sets the keys, 'q' leaves the game, and
 // a b e s u d l r tap A, B, sElect, Start and the directions.
 
@@ -173,6 +176,13 @@ static fabgl::Canvas * s_canvas;
 static String savePathFor(RomBlob const & rom, char const * ext = ".sav");
 static void   editCheats(RomBlob const & rom);
 static char const * editPadKeys();
+static bool   slotUsed(RomBlob const & rom, int slot);
+static char const * saveSlot(int idx, int slot);
+static void   applyCheats(RomBlob const & rom);
+
+// The game in the console while the menu shows: Esc pauses it (nothing is copied, the console just
+// waits), Enter on it carries on. Starting or loading another game ends it. -1: none.
+static int s_paused = -1;
 
 // menu layout: the list on the left, a PICTURE_SIZE square picture on the right
 static constexpr int LIST_Y = 20;
@@ -198,8 +208,12 @@ static void drawRow(int idx, int top, bool highlighted)
   String n = g_roms[idx].title;
   if (n.length() > 21)
     n = n.substring(0, 21);
+  if (idx == s_paused) {
+    cv.setPenColor(Color::BrightGreen);
+    cv.drawText(2, y, "\x10");         // the paused game: a play arrow
+  }
   cv.setPenColor(highlighted ? Color::BrightWhite : Color::White);
-  cv.drawText(4, y, n.c_str());        // glyphs fill their background with the brush colour
+  cv.drawText(12, y, n.c_str());       // glyphs fill their background with the brush colour
   cv.setBrushColor(Color::Black);
 }
 
@@ -218,10 +232,25 @@ static void drawMessage(char const * message)
 {
   fabgl::Canvas & cv = *s_canvas;
   cv.setBrushColor(Color::Black);
-  cv.fillRectangle(0, 209, 255, 218);
+  cv.fillRectangle(0, 200, 255, 209);
   if (message) {
+    Serial.printf("Menu: %s\n", message);
     cv.setPenColor(Color::BrightRed);
-    cv.drawText(8, 210, message);
+    cv.drawText(8, 201, message);
+  }
+}
+
+
+// under the picture: which of the game's savestate slots hold a state
+static void drawSlots(int idx)
+{
+  fabgl::Canvas & cv = *s_canvas;
+  for (int slot = 1; slot <= 2; ++slot) {
+    bool used = slotUsed(g_roms[idx], slot);
+    char text[12];
+    snprintf(text, sizeof(text), "Slot %d %c", slot, used ? 0xfb : '-');    // a check mark
+    cv.setPenColor(used ? Color::BrightGreen : Color::BrightBlack);
+    cv.drawText(PIC_X, PIC_Y + PICTURE_SIZE + 6 + (slot - 1) * 10, text);
   }
 }
 
@@ -287,8 +316,9 @@ static void drawMenu(int selected, int top, int visible, char const * message)
     }
     drawMessage(message);
     cv.setPenColor(Color::BrightBlack);
-    cv.drawText(4, 222, "Enter:play L/R:TV M:man G:codes");
-    cv.drawText(4, 231, "K:keys F1:rst F2/3:vol F10:cheat");
+    cv.drawText(4, 213, "Enter:play \x1b\x1a:TV M:man G:codes");
+    cv.drawText(4, 222, "S/L:save/load state  K:keys");
+    cv.drawText(4, 231, "F1:rst F2/3:vol F10:cheat");
   } else {
     if (moved) {
       drawRow(s_shown.selected, top, false);
@@ -301,8 +331,11 @@ static void drawMenu(int selected, int top, int visible, char const * message)
   }
   cv.waitCompletion();
 
-  if (g_romCount && moved)
+  if (g_romCount && moved) {
+    drawSlots(selected);
+    cv.waitCompletion();
     drawPicture(selected);
+  }
 
   s_shown.valid    = true;
   s_shown.selected = selected;
@@ -431,9 +464,45 @@ static void showManual(RomBlob const & rom)
 }
 
 
-// Shows the list until a ROM is picked. Returns its index.
-static int chooseRom(char const * message)
+// Asks for a savestate slot in the message line: 1 or 2, 0 for Esc. Over serial: 1, 2 or ~.
+static int askSlot(char const * question)
 {
+  drawMessage(question);
+  s_shown.message = question;         // so the menu redraws its message line afterwards
+  s_canvas->waitCompletion();
+  auto kb = PS2.keyboard();
+  for (;;) {
+    if (Serial.available()) {
+      int c = Serial.read();
+      if (c == '1' || c == '2')
+        return c - '0';
+      if (c == '~')
+        return 0;
+      continue;
+    }
+    if (!kb->virtualKeyAvailable()) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    bool down;
+    auto vk = kb->getNextVirtualKey(&down, 0);
+    if (!down)
+      continue;
+    if (vk == fabgl::VK_1 || vk == fabgl::VK_KP_1 || vk == fabgl::VK_KP_END)
+      return 1;
+    if (vk == fabgl::VK_2 || vk == fabgl::VK_KP_2 || vk == fabgl::VK_KP_DOWN)
+      return 2;
+    if (vk == fabgl::VK_ESCAPE)
+      return 0;
+  }
+}
+
+
+// Shows the list until a ROM is picked. Returns its index, and in *slot the savestate slot to
+// start it from (0: none; for the paused game that means carrying on).
+static int chooseRom(char const * message, int * slot)
+{
+  *slot = 0;
   static int selected = 0;
   const int visible = 20;
   auto kb = PS2.keyboard();
@@ -456,6 +525,12 @@ static int chooseRom(char const * message)
           Serial.read();
           message = editPadKeys();
           s_shown.valid = false;
+          break;
+        }
+        if (c == 's' || c == 'l') {
+          Serial.read();
+          vk = c == 's' ? fabgl::VK_s : fabgl::VK_l;      // as the keys; 'l' takes a game number after the slot
+          down = true;
           break;
         }
         if (c != 'm' && c != 'g' && !isdigit(c)) {
@@ -500,9 +575,46 @@ static int chooseRom(char const * message)
       case fabgl::VK_g: case fabgl::VK_G:
         if (n) {
           editCheats(g_roms[selected]);
+          if (selected == s_paused)
+            applyCheats(g_roms[selected]);
           s_shown.valid = false;
         }
         break;
+      case fabgl::VK_s: case fabgl::VK_S: {
+        if (s_paused < 0) {
+          message = "No game paused to save";
+          break;
+        }
+        // the paused game, whatever is selected
+        if (selected != s_paused) {
+          selected = s_paused;
+          top = std::max(0, std::min(selected - visible / 2, g_romCount - visible));
+          drawMenu(selected, top, visible, nullptr);
+        }
+        int slot = askSlot("Save to slot 1 or 2? (Esc)");
+        message = slot ? saveSlot(s_paused, slot) : nullptr;
+        if (slot)
+          drawSlots(s_paused);
+        break;
+      }
+      case fabgl::VK_l: case fabgl::VK_L: {
+        if (!n)
+          break;
+        int s = askSlot("Load from slot 1 or 2? (Esc)");
+        if (!s)
+          break;
+        if (Serial.available()) {             // over serial the game's number follows
+          int idx = Serial.parseInt();
+          if (idx >= 0 && idx < n)
+            selected = idx;
+        }
+        if (!slotUsed(g_roms[selected], s)) {
+          message = s == 1 ? "Slot 1 is empty" : "Slot 2 is empty";
+          break;
+        }
+        *slot = s;
+        return selected;
+      }
       case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
         if (n && g_roms[selected].manual) {
           showManual(g_roms[selected]);
@@ -723,12 +835,68 @@ static void editCheats(RomBlob const & rom)
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// the pad's keys: one key per button, for all games, kept in SPIFFS (written only on change)
+// the pads: keyboard keys for two players and real NES pads on GPIOs
 
+// Real NES pads (a 4021 shift register in each): latch and clock are shared, each pad has its own
+// data line. -1 = not connected. Power the pads from 3.3 V (the 4021 runs on it), so their data
+// line is safe for the ESP32; the data GPIOs need a pull-up (internal, so not GPIO 34-39, or an
+// external one), so an unplugged pad reads as no buttons.
+static constexpr int PAD_LATCH_GPIO   = -1;
+static constexpr int PAD_CLOCK_GPIO   = -1;
+static constexpr int PAD_DATA_GPIO[2] = { -1, -1 };
+
+static void initPads()
+{
+  if (PAD_LATCH_GPIO < 0 || PAD_CLOCK_GPIO < 0)
+    return;
+  pinMode(PAD_LATCH_GPIO, OUTPUT);
+  pinMode(PAD_CLOCK_GPIO, OUTPUT);
+  digitalWrite(PAD_LATCH_GPIO, LOW);
+  digitalWrite(PAD_CLOCK_GPIO, LOW);
+  for (int gpio : PAD_DATA_GPIO)
+    if (gpio >= 0)
+      pinMode(gpio, INPUT_PULLUP);
+}
+
+// Reads both pads as the NES does: a latch pulse, then 8 bits, A first, a pressed button is low.
+// About 110 us, once per frame.
+static void readHardwarePads(uint8_t out[2])
+{
+  out[0] = out[1] = 0;
+  if (PAD_LATCH_GPIO < 0 || PAD_CLOCK_GPIO < 0)
+    return;
+  digitalWrite(PAD_LATCH_GPIO, HIGH);
+  delayMicroseconds(12);
+  digitalWrite(PAD_LATCH_GPIO, LOW);
+  delayMicroseconds(6);
+  for (int bit = 0; bit < 8; ++bit) {
+    for (int p = 0; p < 2; ++p)
+      if (PAD_DATA_GPIO[p] >= 0 && !digitalRead(PAD_DATA_GPIO[p]))
+        out[p] |= 1 << bit;
+    digitalWrite(PAD_CLOCK_GPIO, HIGH);
+    delayMicroseconds(6);
+    digitalWrite(PAD_CLOCK_GPIO, LOW);
+    delayMicroseconds(6);
+  }
+}
+
+
+// Keyboard keys: per player one key per button, plus the Famicom microphone for player 2. The same
+// for all games, kept in SPIFFS (written only on change).
 static constexpr char const * KEYS_PATH = "/keys.cfg";
+static constexpr int PAD_KEYS = 9;            // the buttons by bit (BTN_A = bit 0 ... BTN_RIGHT = bit 7), then the mic
+static constexpr int MIC = 8;
 
-static fabgl::VirtualKey s_padKeys[8];   // by button bit (BTN_A = bit 0 ... BTN_RIGHT = bit 7)
-static uint8_t s_padState;           // the buttons whose keys are down, from the key events
+static const fabgl::VirtualKey DEFAULT_PAD_KEYS[2][PAD_KEYS] = {
+  { fabgl::VK_LCTRL, fabgl::VK_LALT, fabgl::VK_LSHIFT, fabgl::VK_SPACE,
+    fabgl::VK_UP, fabgl::VK_DOWN, fabgl::VK_LEFT, fabgl::VK_RIGHT, fabgl::VK_NONE },
+  { fabgl::VK_KP_PERIOD, fabgl::VK_KP_0, fabgl::VK_KP_DIVIDE, fabgl::VK_KP_MULTIPLY,
+    fabgl::VK_KP_8, fabgl::VK_KP_5, fabgl::VK_KP_4, fabgl::VK_KP_6, fabgl::VK_KP_PLUS },
+};
+
+static fabgl::VirtualKey s_padKeys[2][PAD_KEYS];
+static uint8_t s_padState[2];        // the buttons whose keys are down, from the key events
+static bool    s_micState;
 
 
 // One name for the keys that are one key on the keyboard: FabGL gives a letter as a different
@@ -748,12 +916,10 @@ static fabgl::VirtualKey canonKey(fabgl::VirtualKey vk)
     { VK_COLON, VK_SEMICOLON }, { VK_QUOTEDBL, VK_QUOTE }, { VK_LESS, VK_COMMA }, { VK_GREATER, VK_PERIOD },
     { VK_QUESTION, VK_SLASH }, { VK_TILDE, VK_GRAVEACCENT },
     { VK_RSHIFT, VK_LSHIFT }, { VK_RALT, VK_LALT }, { VK_RCTRL, VK_LCTRL }, { VK_RGUI, VK_LGUI },
-    { VK_KP_UP, VK_UP }, { VK_KP_8, VK_UP }, { VK_KP_DOWN, VK_DOWN }, { VK_KP_2, VK_DOWN },
-    { VK_KP_LEFT, VK_LEFT }, { VK_KP_4, VK_LEFT }, { VK_KP_RIGHT, VK_RIGHT }, { VK_KP_6, VK_RIGHT },
-    { VK_KP_HOME, VK_HOME }, { VK_KP_7, VK_HOME }, { VK_KP_END, VK_END }, { VK_KP_1, VK_END },
-    { VK_KP_PAGEUP, VK_PAGEUP }, { VK_KP_9, VK_PAGEUP }, { VK_KP_PAGEDOWN, VK_PAGEDOWN }, { VK_KP_3, VK_PAGEDOWN },
-    { VK_KP_INSERT, VK_INSERT }, { VK_KP_0, VK_INSERT }, { VK_KP_DELETE, VK_DELETE }, { VK_KP_PERIOD, VK_DELETE },
-    { VK_KP_CENTER, VK_KP_5 }, { VK_KP_ENTER, VK_RETURN },
+    // the numpad is its own keys, with or without Num Lock
+    { VK_KP_UP, VK_KP_8 }, { VK_KP_DOWN, VK_KP_2 }, { VK_KP_LEFT, VK_KP_4 }, { VK_KP_RIGHT, VK_KP_6 },
+    { VK_KP_HOME, VK_KP_7 }, { VK_KP_END, VK_KP_1 }, { VK_KP_PAGEUP, VK_KP_9 }, { VK_KP_PAGEDOWN, VK_KP_3 },
+    { VK_KP_INSERT, VK_KP_0 }, { VK_KP_DELETE, VK_KP_PERIOD }, { VK_KP_CENTER, VK_KP_5 },
   };
   for (auto const & p : pairs)
     if (vk == p[0])
@@ -762,20 +928,17 @@ static fabgl::VirtualKey canonKey(fabgl::VirtualKey vk)
 }
 
 
-// a key event while a game runs: the pad's buttons follow their keys
+// a key event while a game runs: the pads' buttons follow their keys
 static void padKeyEvent(fabgl::VirtualKey vk, bool down)
 {
   vk = canonKey(vk);
-  for (int b = 0; b < 8; ++b)
-    if (s_padKeys[b] == vk)
-      s_padState = down ? (s_padState | (1 << b)) : (s_padState & ~(1 << b));
+  for (int p = 0; p < 2; ++p)
+    for (int b = 0; b < 8; ++b)
+      if (s_padKeys[p][b] == vk)
+        s_padState[p] = down ? (s_padState[p] | (1 << b)) : (s_padState[p] & ~(1 << b));
+  if (s_padKeys[1][MIC] == vk)
+    s_micState = down;
 }
-
-
-static const fabgl::VirtualKey DEFAULT_PAD_KEYS[8] = {
-  fabgl::VK_LCTRL, fabgl::VK_LALT, fabgl::VK_LSHIFT, fabgl::VK_SPACE,
-  fabgl::VK_UP, fabgl::VK_DOWN, fabgl::VK_LEFT, fabgl::VK_RIGHT,
-};
 
 
 // the keys the emulator keeps for itself
@@ -786,26 +949,34 @@ static bool reservedKey(fabgl::VirtualKey vk)
 }
 
 
+// The file: 2 x 9 key numbers (16 bit), 0 for a button without a key. An older one of 8 numbers
+// holds only player 1's buttons.
 static void loadPadKeys()
 {
   memcpy(s_padKeys, DEFAULT_PAD_KEYS, sizeof(s_padKeys));
   File f = SPIFFS.exists(KEYS_PATH) ? SPIFFS.open(KEYS_PATH, "r") : File();
-  uint16_t keys[8];
-  if (!f || f.read((uint8_t *) keys, sizeof(keys)) != sizeof(keys))
+  uint16_t keys[2 * PAD_KEYS];
+  int n = f ? f.read((uint8_t *) keys, sizeof(keys)) / 2 : 0;
+  if (n != 8 && n != 2 * PAD_KEYS)
     return;
-  for (uint16_t k : keys)
-    if (k == fabgl::VK_NONE || k >= fabgl::VK_LAST)
+  for (int i = 0; i < n; ++i)
+    if (keys[i] >= fabgl::VK_LAST)
       return;                        // not a file of ours: keep the defaults
-  for (int b = 0; b < 8; ++b)
-    s_padKeys[b] = (fabgl::VirtualKey) keys[b];
+  for (int i = 0; i < n; ++i)
+    s_padKeys[i / PAD_KEYS][i % PAD_KEYS] = (fabgl::VirtualKey) keys[i];
+  // an older file: player 2's default keys that player 1 has stay free
+  for (int b = 0; b < PAD_KEYS && n == 8; ++b)
+    for (int o = 0; o < 8; ++o)
+      if (s_padKeys[1][b] == s_padKeys[0][o])
+        s_padKeys[1][b] = fabgl::VK_NONE;
 }
 
 
 static void storePadKeys()
 {
-  uint16_t keys[8];
-  for (int b = 0; b < 8; ++b)
-    keys[b] = s_padKeys[b];
+  uint16_t keys[2 * PAD_KEYS];
+  for (int i = 0; i < 2 * PAD_KEYS; ++i)
+    keys[i] = s_padKeys[i / PAD_KEYS][i % PAD_KEYS];
   s_soundGen->play(false);          // flash writes stop the cache, and the sound interrupt with it
   File f = SPIFFS.open(KEYS_PATH, "w");
   if (f) {
@@ -821,6 +992,7 @@ static String keyName(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
   switch (vk) {
+    case VK_NONE:      return "-";
     case VK_UP:        return "\x18";
     case VK_DOWN:      return "\x19";
     case VK_LEFT:      return "\x1b";
@@ -843,17 +1015,20 @@ static String keyName(fabgl::VirtualKey vk)
     case VK_NUMLOCK:   return "Num Lock";
     case VK_SCROLLLOCK: return "Scroll Lock";
     case VK_APPLICATION: return "Menu";
-    case VK_KP_5:      return "Keypad 5";
     case VK_KP_PLUS:   return "Keypad +";
     case VK_KP_MINUS:  return "Keypad -";
     case VK_KP_MULTIPLY: return "Keypad *";
     case VK_KP_DIVIDE: return "Keypad /";
+    case VK_KP_PERIOD: return "Keypad .";
+    case VK_KP_ENTER:  return "Keypad Ent";
     default:           break;
   }
   if (vk >= VK_F1 && vk <= VK_F12)
     return "F" + String(vk - VK_F1 + 1);
   if (vk >= VK_a && vk <= VK_z)
     return String((char)('A' + (vk - VK_a)));
+  if (vk >= VK_KP_0 && vk <= VK_KP_9)
+    return "Keypad " + String(vk - VK_KP_0);
   int a = PS2.keyboard()->virtualKeyToASCII(vk);
   if (a > 32 && a < 127)
     return String((char) a);
@@ -862,15 +1037,25 @@ static String keyName(fabgl::VirtualKey vk)
 
 
 // The pad editor's picture: an NES pad, every button drawn on its own so the one being set can
-// blink. Positions in the 256x240 canvas.
+// blink; player 2's has the Famicom's microphone. Positions in the 256x240 canvas.
 static constexpr int PAD_Y  = 30;                 // top of the pad's body
 static constexpr int DPAD_X = 66, DPAD_Y = PAD_Y + 54;
 static constexpr int AB_Y   = PAD_Y + 56;
+static constexpr int MIC_X  = 200, MIC_Y = PAD_Y + 11;
 
 static void drawPadButton(int b, bool lit)
 {
   fabgl::Canvas & cv = *s_canvas;
   Color dark = lit ? Color::BrightYellow : Color::BrightBlack;
+  if (b == MIC) {
+    // a grille: a dark disc with slots
+    cv.setBrushColor(dark);
+    cv.fillEllipse(MIC_X, MIC_Y, 17, 17);
+    cv.setPenColor(Color::White);
+    for (int i = -4; i <= 4; i += 4)
+      cv.drawLine(MIC_X - 4, MIC_Y + i, MIC_X + 4, MIC_Y + i);
+    return;
+  }
   switch (1 << b) {
     case BTN_UP:
       cv.setBrushColor(dark);
@@ -904,7 +1089,7 @@ static void drawPadButton(int b, bool lit)
 }
 
 
-static void drawPad()
+static void drawPad(int player)
 {
   fabgl::Canvas & cv = *s_canvas;
   // the cable and the body, light grey, with the black face
@@ -915,7 +1100,8 @@ static void drawPad()
   cv.setBrushColor(Color::Black);
   cv.fillRectangle(24, PAD_Y + 22, 231, PAD_Y + 87);
   cv.setPenColor(Color::BrightRed);
-  cv.drawText(24, PAD_Y + 8, "ESPNES");
+  cv.setBrushColor(Color::White);
+  cv.drawText(24, PAD_Y + 8, player ? "ESPNES  II" : "ESPNES  I");
   // the D-pad's middle, the arms are buttons
   cv.setBrushColor(Color::BrightBlack);
   cv.fillRectangle(DPAD_X - 6, DPAD_Y - 6, DPAD_X + 6, DPAD_Y + 6);
@@ -933,78 +1119,43 @@ static void drawPad()
   cv.drawText(&fabgl::FONT_4x6, 134, AB_Y + 16, "START");
   cv.drawText(175, AB_Y + 16, "B");
   cv.drawText(205, AB_Y + 16, "A");
-  for (int b = 0; b < 8; ++b)
+  for (int b = 0; b < (player ? PAD_KEYS : 8); ++b)
     drawPadButton(b, false);
 }
 
 
-// The key mapper: a key for each button in turn, the button being set blinks on the pad and in
-// the list; a key used by another button swaps with it. Esc cancels; after the last button the
-// keys are kept. Over serial: a letter, digit or space is that key, ~ cancels.
+// The key mapper. First the player (1 or 2), then a key for each button in turn: the button being
+// set blinks on the pad and in the list; a key that another button (of either player) has swaps
+// with it. Esc cancels; after the last button the keys are kept. Over serial: 1 or 2 picks the
+// player, then a letter, digit or space is that key; ~ cancels, ^ takes the default keys.
 static char const * editPadKeys()
 {
-  static const int order[8] = { 4, 5, 6, 7, 2, 3, 1, 0 };   // Up Down Left Right Select Start B A
-  static char const * const names[8] = { "A", "B", "Select", "Start", "Up", "Down", "Left", "Right" };
-  static constexpr int LIST_TOP = PAD_Y + 106;
+  static const int order[PAD_KEYS] = { 4, 5, 6, 7, 2, 3, 1, 0, MIC };   // Up Down Left Right Select Start B A Mic
+  static char const * const names[PAD_KEYS] = { "A", "B", "Select", "Start", "Up", "Down", "Left", "Right", "Mic" };
+  static constexpr int LIST_TOP = PAD_Y + 104;
 
-  fabgl::VirtualKey keys[8];
+  fabgl::VirtualKey keys[2][PAD_KEYS];
   memcpy(keys, s_padKeys, sizeof(keys));
   fabgl::Canvas & cv = *s_canvas;
   auto kb = PS2.keyboard();
   kb->emptyVirtualKeyQueue();
 
-  cv.setBrushColor(Color::Black);
-  cv.clear();
-  cv.setPenColor(Color::BrightYellow);
-  cv.drawText(0, 4, "KEYS");
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 222, "Press a key for each button");
-  cv.drawText(0, 231, "Esc:cancel");
-  drawPad();
-
-  // the list, every line padded to the full width so nothing needs clearing
-  auto drawLine = [&](int step, int current, bool cursorOn) {
-    int b = order[step];
-    char line[33];
-    String key = step == current ? (cursorOn ? "_" : " ") : keyName(keys[b]);
-    snprintf(line, sizeof(line), "%c %-7s %-22s", step == current ? '>' : ' ', names[b], key.c_str());
-    cv.setPenColor(step == current ? Color::BrightYellow : Color::White);
-    cv.drawText(0, LIST_TOP + step * 9, line);
-  };
   auto drawMsg = [&](char const * message) {
     char line[33];
     snprintf(line, sizeof(line), "%-32s", message ? message : "");
     cv.setPenColor(Color::BrightRed);
-    cv.drawText(0, 210, line);
+    cv.drawText(0, 212, line);
   };
-
-  int step = 0;
-  bool on = true;
-  int64_t nextBlink = 0;
-  for (int i = 0; i < 8; ++i)
-    drawLine(i, step, on);
-
-  for (;;) {
-    // blinking: the button on the pad and the cursor in the list
-    int64_t now = esp_timer_get_time();
-    if (now >= nextBlink) {
-      on = !on;
-      nextBlink = now + 300000;
-      drawPadButton(order[step], on);
-      drawLine(step, step, on);
-      cv.waitCompletion();
-    }
-
-    // one key, from the keyboard or the serial console
+  // one key, from the keyboard or the serial console; VK_NONE when there is none yet
+  auto nextKey = [&]() {
     fabgl::VirtualKey vk = fabgl::VK_NONE;
     if (Serial.available()) {
       int c = tolower(Serial.read());
       if (c == '~')
         vk = fabgl::VK_ESCAPE;
-      else if (c == '^') {
-        memcpy(keys, DEFAULT_PAD_KEYS, sizeof(keys));
-        break;
-      } else if (c >= 'a' && c <= 'z')
+      else if (c == '^')
+        vk = fabgl::VK_LAST;         // stands for: the default keys
+      else if (c >= 'a' && c <= 'z')
         vk = (fabgl::VirtualKey)(fabgl::VK_a + (c - 'a'));
       else if (c >= '0' && c <= '9')
         vk = (fabgl::VirtualKey)(fabgl::VK_0 + (c - '0'));
@@ -1016,13 +1167,76 @@ static char const * editPadKeys()
       if (!down)
         vk = fabgl::VK_NONE;
     }
-    if (vk == fabgl::VK_NONE) {
+    if (vk == fabgl::VK_NONE)
       vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
+    return vk;
+  };
 
+  cv.setBrushColor(Color::Black);
+  cv.clear();
+  cv.setPenColor(Color::BrightYellow);
+  cv.drawText(0, 4, "KEYS");
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 231, "Esc:cancel");
+  drawPad(0);
+
+  // the player
+  drawMsg("Which player? 1 or 2");
+  cv.waitCompletion();
+  int player = -1;
+  while (player < 0) {
+    auto vk = nextKey();
     if (vk == fabgl::VK_ESCAPE)
       return "Keys not changed";
+    if (vk == fabgl::VK_1 || vk == fabgl::VK_KP_1 || vk == fabgl::VK_KP_END)
+      player = 0;
+    else if (vk == fabgl::VK_2 || vk == fabgl::VK_KP_2 || vk == fabgl::VK_KP_DOWN)
+      player = 1;
+  }
+  int steps = player ? PAD_KEYS : 8;
+  fabgl::VirtualKey * mine = keys[player];
+  drawMsg(nullptr);
+  if (player)
+    drawPad(1);
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 222, "Press a key for each button");
+
+  // the list, every line padded to the full width so nothing needs clearing
+  auto drawLine = [&](int step, int current, bool cursorOn) {
+    int b = order[step];
+    char line[33];
+    String key = step == current ? (cursorOn ? "_" : " ") : keyName(mine[b]);
+    snprintf(line, sizeof(line), "%c %-7s %-22s", step == current ? '>' : ' ', names[b], key.c_str());
+    cv.setPenColor(step == current ? Color::BrightYellow : Color::White);
+    cv.drawText(0, LIST_TOP + step * 8, line);
+  };
+
+  int step = 0;
+  bool on = true;
+  int64_t nextBlink = 0;
+  for (int i = 0; i < steps; ++i)
+    drawLine(i, step, on);
+
+  while (step < steps) {
+    // blinking: the button on the pad and the cursor in the list
+    int64_t now = esp_timer_get_time();
+    if (now >= nextBlink) {
+      on = !on;
+      nextBlink = now + 300000;
+      drawPadButton(order[step], on);
+      drawLine(step, step, on);
+      cv.waitCompletion();
+    }
+
+    auto vk = nextKey();
+    if (vk == fabgl::VK_NONE)
+      continue;
+    if (vk == fabgl::VK_ESCAPE)
+      return "Keys not changed";
+    if (vk == fabgl::VK_LAST) {
+      memcpy(mine, DEFAULT_PAD_KEYS[player], sizeof(keys[0]));
+      break;
+    }
     vk = canonKey(vk);
     if (reservedKey(vk)) {
       drawMsg("Esc F1 F2 F3 F10 are taken");
@@ -1032,18 +1246,19 @@ static char const * editPadKeys()
 
     // a key another button has: that button gets this one's old key
     int b = order[step];
-    for (int o = 0; o < 8; ++o)
-      if (o != b && keys[o] == vk) {
-        keys[o] = keys[b];
-        for (int i = 0; i < 8; ++i)
-          if (order[i] == o)
-            drawLine(i, step, on);
-      }
-    keys[b] = vk;
+    for (int p = 0; p < 2; ++p)
+      for (int o = 0; o < PAD_KEYS; ++o)
+        if ((p != player || o != b) && keys[p][o] == vk) {
+          keys[p][o] = mine[b];
+          if (p == player)
+            for (int i = 0; i < steps; ++i)
+              if (order[i] == o)
+                drawLine(i, step, on);
+        }
+    mine[b] = vk;
     drawPadButton(b, false);
-    if (++step == 8)
-      break;
-    drawLine(step - 1, step, on);
+    if (++step < steps)
+      drawLine(step - 1, step, on);
     on = false;
     nextBlink = 0;                   // the next button lights up at once
   }
@@ -1053,10 +1268,12 @@ static char const * editPadKeys()
     return "Keys not changed";
   memcpy(s_padKeys, keys, sizeof(keys));
   storePadKeys();
-  Serial.print("Keys:");
-  for (int b = 0; b < 8; ++b)
-    Serial.printf(" %s=%s", names[b], keyName(keys[b]).c_str());
-  Serial.println();
+  for (int p = 0; p < 2; ++p) {
+    Serial.printf("Keys player %d:", p + 1);
+    for (int b = 0; b < (p ? PAD_KEYS : 8); ++b)
+      Serial.printf(" %s=%s", names[b], keyName(s_padKeys[p][b]).c_str());
+    Serial.println();
+  }
   return "Keys saved";
 }
 
@@ -1236,6 +1453,112 @@ static void storeSave()
 }
 
 
+// the game's codes into the console, all on
+static void applyCheats(RomBlob const & rom)
+{
+  std::vector<String> codes;
+  loadCheatCodes(rom, codes);
+  Cheat cheats[Nes::MAX_CHEATS];
+  int cheatCount = 0;
+  for (auto const & c : codes)
+    if (decodeCheat(c.c_str(), &cheats[cheatCount]))
+      ++cheatCount;
+  nes.setCheats(cheats, cheatCount);
+  nes.enableCheats(cheatCount > 0);
+  if (cheatCount)
+    Serial.printf("%d cheat code(s) on\n", cheatCount);
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// savestates: two slots per game in SPIFFS, compressed (see src/nes/state.h), 1-12 KB each
+
+// SPIFFS space a save leaves free, so the file system keeps room to work (garbage collection,
+// wear levelling) and the battery saves always fit
+static constexpr size_t SPIFFS_RESERVE = 48 * 1024;
+
+static String slotPath(RomBlob const & rom, int slot)
+{
+  return savePathFor(rom, slot == 1 ? ".st1" : ".st2");
+}
+
+
+static bool slotUsed(RomBlob const & rom, int slot)
+{
+  return SPIFFS.exists(slotPath(rom, slot));
+}
+
+
+struct FileSink : StateSink {
+  File & f;
+  size_t written = 0;
+  explicit FileSink(File & file) : f(file) { }
+  bool write(uint8_t const * data, size_t size) override
+  {
+    written += size;
+    return f.write(data, size) == size;
+  }
+};
+
+struct FileSource : StateSource {
+  File & f;
+  explicit FileSource(File & file) : f(file) { }
+  size_t read(uint8_t * data, size_t size) override  { return f.read(data, size); }
+};
+
+
+// Saves the paused game's state. Refuses when SPIFFS would get too full; writes a new file first
+// and only then replaces the slot, so a failed save leaves the old state. Returns a message.
+static char const * saveSlot(int idx, int slot)
+{
+  RomBlob const & rom = g_roms[idx];
+  String path = slotPath(rom, slot), temp = savePathFor(rom, ".stn");
+  size_t old = 0;
+  if (SPIFFS.exists(path)) {
+    File f = SPIFFS.open(path, "r");
+    old = f.size();
+  }
+  size_t free = SPIFFS.totalBytes() - SPIFFS.usedBytes() + old;
+  if (free < nes.stateSizeLimit() + SPIFFS_RESERVE)
+    return "Not enough space for a state";
+
+  uint32_t t0 = millis();
+  s_soundGen->play(false);          // flash writes stop the cache, and the sound interrupt with it
+  File f = SPIFFS.open(temp, "w");
+  FileSink sink(f);
+  bool ok = f && nes.saveState(sink);
+  size_t size = sink.written;
+  if (f)
+    f.close();
+  if (ok) {
+    if (old || SPIFFS.exists(path))
+      SPIFFS.remove(path);
+    ok = SPIFFS.rename(temp, path);
+  } else {
+    SPIFFS.remove(temp);
+  }
+  s_soundGen->play(true);
+  Serial.printf("State %s %s: %u bytes, %u ms, SPIFFS %u of %u bytes used\n", path.c_str(), ok ? "saved" : "NOT saved",
+                (unsigned) size, (unsigned)(millis() - t0), (unsigned) SPIFFS.usedBytes(), (unsigned) SPIFFS.totalBytes());
+  if (!ok)
+    return "Saving the state failed";
+  return slot == 1 ? "Saved in slot 1" : "Saved in slot 2";
+}
+
+
+// Into the freshly loaded game. Returns nullptr or a message.
+static char const * loadSlot(RomBlob const & rom, int slot)
+{
+  File f = SPIFFS.open(slotPath(rom, slot), "r");
+  if (!f)
+    return "The slot is empty";
+  FileSource source(f);
+  char const * err = nes.loadState(source);
+  Serial.printf("State %s: %s\n", slotPath(rom, slot).c_str(), err ? err : "loaded");
+  return err;
+}
+
+
 // Returns nullptr or an error message.
 static char const * loadRom(RomBlob const & rom)
 {
@@ -1251,18 +1574,7 @@ static char const * loadRom(RomBlob const & rom)
     loadSave();
 
   nes.setOverclock(cfg.overclock);
-
-  std::vector<String> codes;
-  loadCheatCodes(rom, codes);
-  Cheat cheats[Nes::MAX_CHEATS];
-  int cheatCount = 0;
-  for (auto const & c : codes)
-    if (decodeCheat(c.c_str(), &cheats[cheatCount]))
-      ++cheatCount;
-  nes.setCheats(cheats, cheatCount);
-  nes.enableCheats(cheatCount > 0);
-  if (cheatCount)
-    Serial.printf("%d cheat code(s) on\n", cheatCount);
+  applyCheats(rom);
   nes.powerOn();
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
@@ -1273,13 +1585,23 @@ static char const * loadRom(RomBlob const & rom)
 }
 
 
-static uint8_t readPad()
+static uint8_t filterPad(uint8_t b)
 {
-  uint8_t b = s_padState;
   // a real pad cannot press opposite directions; some games crash when it happens
   if ((b & (BTN_UP | BTN_DOWN)) == (BTN_UP | BTN_DOWN))       b &= ~(BTN_UP | BTN_DOWN);
   if ((b & (BTN_LEFT | BTN_RIGHT)) == (BTN_LEFT | BTN_RIGHT)) b &= ~(BTN_LEFT | BTN_RIGHT);
   return b;
+}
+
+
+// the buttons of both players, keyboard and real pads together
+static void updatePads(uint8_t serialButtons)
+{
+  uint8_t hw[2];
+  readHardwarePads(hw);
+  for (int p = 0; p < 2; ++p)
+    nes.setButtons(p, filterPad(s_padState[p] | hw[p] | (p ? 0 : serialButtons)));
+  nes.setMic(s_micState);
 }
 
 
@@ -1300,7 +1622,8 @@ static void runGame()
 {
   auto kb = PS2.keyboard();
   kb->emptyVirtualKeyQueue();
-  s_padState = 0;
+  s_padState[0] = s_padState[1] = 0;
+  s_micState = false;
 
   // NTSC 60.0988 Hz, PAL 50.007 Hz
   const int64_t period = nes.region() == Region::PAL ? 19997 : 16639;
@@ -1357,7 +1680,7 @@ static void runGame()
         serialFrames = 10;
       }
     }
-    nes.setButtons(0, readPad() | (serialFrames ? serialButtons : 0));
+    updatePads(serialFrames ? serialButtons : 0);
     if (serialFrames)
       --serialFrames;
 
@@ -1447,19 +1770,32 @@ void setup()
   if (!SPIFFS.begin(true))
     Serial.println("SPIFFS could not be mounted");
   loadPadKeys();
+  initPads();
 
   Serial.printf("Free heap: %u bytes, largest block %u\n",
                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
                 (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
   for (;;) {
-    int idx = chooseRom(message);
-    message = loadRom(g_roms[idx]);
-    if (message)
-      continue;
+    int slot;
+    int idx = chooseRom(message, &slot);
+    message = nullptr;
+    if (idx != s_paused || slot) {
+      // a new game: the paused one ends
+      s_paused = -1;
+      message = loadRom(g_roms[idx]);
+      if (!message && slot)
+        message = loadSlot(g_roms[idx], slot);
+      if (message)
+        continue;
+    }
     s_canvas->waitCompletion();
     runGame();
     storeSave();
+    // the console waits as it is, unless the game crashed it
+    s_paused = nes.cpu.jammed ? -1 : idx;
+    if (s_paused >= 0)
+      message = "Paused: Enter goes on, S saves";
   }
 }
 

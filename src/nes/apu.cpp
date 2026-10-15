@@ -2,6 +2,7 @@
 
 #include "apu.h"
 #include "nes.h"
+#include "state.h"
 
 
 static const uint8_t s_lengthTable[32] = {
@@ -530,5 +531,21 @@ void Apu::write(uint16_t addr, uint8_t v)
         halfFrame();
       }
       break;
+  }
+}
+
+
+void Apu::state(StateIO & io)
+{
+  // the channels are plain structs
+  io.pod(m_pulse); io.pod(m_tri); io.pod(m_noise); io.pod(m_dmc);
+  io.pod(m_region); io.pod(m_dmaStall); io.pod(m_loadPending); io.pod(m_loadAt);
+  io.pod(m_cycle); io.pod(m_parity); io.pod(m_accCycles);
+  io.pod(m_fiveStep); io.pod(m_irqInhibit); io.pod(m_frameIrq); io.pod(m_seqCycle); io.pod(m_seqStep);
+  io.pod(m_nextSample); io.pod(m_hpPrevIn); io.pod(m_hpPrevOut);
+  if (io.loading()) {
+    m_seqPositions = m_fiveStep ? (m_region == Region::PAL ? s_seq5PAL : s_seq5NTSC)
+                                : (m_region == Region::PAL ? s_seq4PAL : s_seq4NTSC);
+    m_sampleCount = 0;
   }
 }

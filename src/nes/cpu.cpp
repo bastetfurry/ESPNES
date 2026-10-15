@@ -1,5 +1,6 @@
 #include "cpu.h"
 #include "nes.h"
+#include "state.h"
 
 
 // Base cycles per opcode. Page crossing penalties for reads and branch penalties are added at
@@ -384,4 +385,13 @@ void Cpu::runCold(uint8_t op, int32_t until)
         cycles = until;
         break;
   }
+}
+
+
+void Cpu::state(StateIO & io)
+{
+  io.pod(PC); io.pod(A); io.pod(X); io.pod(Y); io.pod(S);
+  io.pod(cycles); io.pod(nmiPending); io.pod(irqLines); io.pod(jammed);
+  io.pod(m_nmiEdge); io.pod(m_iChanged); io.pod(m_iOld);
+  io.pod(n); io.pod(z); io.pod(C); io.pod(V); io.pod(I); io.pod(D);
 }

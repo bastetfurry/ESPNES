@@ -13,7 +13,10 @@
 //                                         Genie or Action Replay code (repeatable); ntdump prints both
 //                                         nametables' tile numbers as text at the end; ram=A,B,..
 //                                         prints those CPU RAM bytes (hex addresses) at the end;
-//                                         watch=A,B,.. prints those bytes whenever they change
+//                                         watch=A,B,.. prints those bytes whenever they change;
+//                                         mic=FROM-TO holds the Famicom microphone in those frames;
+//                                         statetest=F saves a state at frame F, then loads it at the
+//                                         end and runs the frames from F again: they must match
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -177,6 +180,8 @@ static int run(int argc, char ** argv)
     return 1;
   }
   std::vector<Hold> holds;
+  int micFrom = -1, micTo = -2;
+  int stateAt = -1;
   bool async = false;
   char const * wavPath = nullptr;
   char const * sramPath = nullptr;
@@ -219,6 +224,10 @@ static int run(int argc, char ** argv)
     }
     else if (!strcmp(argv[i], "traceapu"))
       s_traceApu = true;
+    else if (!strncmp(argv[i], "statetest=", 10))
+      stateAt = atoi(argv[i] + 10);
+    else if (!strncmp(argv[i], "mic=", 4))
+      sscanf(argv[i] + 4, "%d-%d", &micFrom, &micTo);
     else if (!strncmp(argv[i], "hold=", 5)) {
       Hold h;
       h.buttons = parseButtons(argv[i] + 5);
@@ -250,12 +259,27 @@ static int run(int argc, char ** argv)
     nes.setCheats(cheats, cheatCount);
     nes.enableCheats(true);
   }
-  for (int f = 0; f < frames; ++f) {
+  struct MemorySink : StateSink {
+    std::vector<uint8_t> data;
+    bool write(uint8_t const * p, size_t n) override { data.insert(data.end(), p, p + n); return true; }
+  } saved;
+  auto inputs = [&](int f) {
     uint8_t b = 0;
     for (auto & h : holds)
       if (f >= h.from && f <= h.to)
         b |= h.buttons;
     nes.setButtons(0, b);
+    nes.setMic(f >= micFrom && f <= micTo);
+  };
+  for (int f = 0; f < frames; ++f) {
+    if (f == stateAt) {
+      if (!nes.saveState(saved)) {
+        printf("saveState failed\n");
+        return 1;
+      }
+      printf("state at frame %d: %zu bytes (limit %zu)\n", f, saved.data.size(), nes.stateSizeLimit());
+    }
+    inputs(f);
     nes.runFrame(true);
     if (!watches.empty()) {
       static std::vector<int> last;
@@ -276,6 +300,34 @@ static int run(int argc, char ** argv)
       printf("CPU jammed at $%04X in frame %d\n", nes.cpu.PC, f);
       break;
     }
+  }
+  if (stateAt >= 0 && stateAt < frames && !async) {
+    // the same frames again from the state: they must end the same
+    static uint8_t frameA[240][256];
+    memcpy(frameA, s_frame, sizeof(frameA));
+    std::vector<uint8_t> ramA(nes.ram, nes.ram + 2048), prgA(nes.prgRam, nes.prgRam + Nes::PRG_RAM_SIZE);
+    uint32_t cyclesA = nes.cpu.cycles;
+    uint16_t pcA = nes.cpu.PC;
+    memset(nes.ram, 0x55, 2048);
+    memset(s_frame, 0, sizeof(s_frame));
+    struct MemorySource : StateSource {
+      std::vector<uint8_t> const * data; size_t pos = 0;
+      size_t read(uint8_t * p, size_t n) override {
+        n = std::min(n, data->size() - pos); memcpy(p, data->data() + pos, n); pos += n; return n;
+      }
+    } src;
+    src.data = &saved.data;
+    if (char const * err = nes.loadState(src)) {
+      printf("loadState: %s\n", err);
+      return 1;
+    }
+    for (int f = stateAt; f < frames; ++f) {
+      inputs(f);
+      nes.runFrame(true);
+    }
+    bool same = !memcmp(frameA, s_frame, sizeof(frameA)) && !memcmp(ramA.data(), nes.ram, 2048) &&
+                !memcmp(prgA.data(), nes.prgRam, Nes::PRG_RAM_SIZE) && cyclesA == (uint32_t) nes.cpu.cycles && pcA == nes.cpu.PC;
+    printf("state test: %s\n", same ? "same frame, RAM and CPU after reloading" : "DIFFERENT after reloading");
   }
   running = false;
   if (worker.joinable())

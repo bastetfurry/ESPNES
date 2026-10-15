@@ -10,6 +10,7 @@
 #include "ppu.h"
 #include "apu.h"
 #include "cheat.h"
+#include "state.h"
 
 #ifdef NES_TRACE
 class Nes;
@@ -53,6 +54,8 @@ public:
   void runFrame(bool draw);
 
   void setButtons(int port, uint8_t buttons)  { m_buttons[port] = buttons; }
+  // The Famicom's microphone on the second pad: while on, $4016 bit 2 reads noise, like a voice.
+  void setMic(bool on)                        { m_mic = on; }
   // Where the picture goes: 240 line buffers of 256 bytes (32 bit aligned), the output byte for
   // each of the 64 NES colours, and whether to use FabGL's raw scanline byte order.
   void setVideoOutput(uint8_t * const * lines, uint8_t const * colorMap, bool vgaOrder)
@@ -96,6 +99,15 @@ public:
   // CPU cycles alternate between "get" (even) and "put" (odd) for the APU and the DMA units;
   // cpu.cycles is frame relative, so the absolute parity needs m_parityBase
   bool isGetCycle(int32_t cycle) const        { return !((cycle ^ m_parityBase) & 1); }
+
+  // --- savestates (see state.h) ---
+  // Between frames only. A state loads only into the game it was saved from (the caller makes sure
+  // of that, e.g. by the file name); the cheats, the overclock and the buttons stay as they are,
+  // the TV system becomes the state's. loadState returns nullptr or an error message; after an
+  // error the console is powered on afresh.
+  bool         saveState(StateSink & sink);
+  char const * loadState(StateSource & source);
+  size_t       stateSizeLimit() const;        // an upper bound of a saved state's size, in bytes
 
   // --- cheats ---
   // Game Genie codes patch what the CPU reads from ROM without slowing it down: an 8 KB page a
@@ -169,6 +181,10 @@ private:
   uint8_t    m_buttons[2];
   uint8_t    m_shift[2];
   bool       m_strobe;
+  bool       m_mic = false;
+  uint16_t   m_micNoise = 1;     // LFSR
+
+  bool            state(StateIO & io);
 
   uint8_t const * patchedPage(int slot, uint8_t const * page);
   void            remapPrg();

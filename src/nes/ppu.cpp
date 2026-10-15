@@ -3,6 +3,7 @@
 
 #include "ppu.h"
 #include "nes.h"
+#include "state.h"
 
 
 // The 8 bits of a pattern plane byte spread to one byte per pixel (0 or 1), leftmost pixel in
@@ -536,4 +537,15 @@ void Ppu::drawLine(LineState const & st, int y, uint8_t * out, uint8_t const * c
         out[x ^ xorX] = spal[p];
     }
   }
+}
+
+
+void Ppu::state(StateIO & io)
+{
+  io.pod(vram); io.pod(palette); io.pod(oam);
+  io.pod(spr0HitCycle); io.pod(vblRaceCycle); io.pod(nmiEdgeCycle); io.pod(vblSetUnits); io.pod(nmiClearCycle);
+  io.pod(m_ctrl); io.pod(m_mask); io.pod(m_status); io.pod(m_oamAddr);
+  io.pod(m_v); io.pod(m_t); io.pod(m_x); io.pod(m_evalStart); io.pod(m_w);
+  io.pod(m_readBuffer); io.pod(m_openBus); io.pod(m_openBusFrame);
+  io.pod(m_vblSuppressed); io.pod(m_vblCycle);
 }

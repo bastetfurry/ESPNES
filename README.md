@@ -112,6 +112,11 @@ A state includes the battery backed RAM: after loading one, leaving the game wri
 game's save file, as an emulator does. States belong to this version of the emulator; one made by
 a version with a different state format is refused (`STATE_VERSION` in `src/nes/nes.cpp`).
 
+F in the list opens the file manager: everything in SPIFFS by game (saves, codes, states, the
+keys) with its size, and how full SPIFFS is. Files of games that are no longer built in are red:
+their names carry the CRC of a ROM no game in the list has. Del deletes the selected file, O all
+files of removed games; both ask first.
+
 `host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
 same frames again: picture, RAM and CPU must come out the same (all games here do).
 
@@ -119,7 +124,7 @@ Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volu
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
 
 ## ROMs
 

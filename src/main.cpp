@@ -176,6 +176,7 @@ static fabgl::Canvas * s_canvas;
 static String savePathFor(RomBlob const & rom, char const * ext = ".sav");
 static void   editCheats(RomBlob const & rom);
 static char const * editPadKeys();
+static char const * fileManager();
 static bool   slotUsed(RomBlob const & rom, int slot);
 static char const * saveSlot(int idx, int slot);
 static void   applyCheats(RomBlob const & rom);
@@ -317,7 +318,7 @@ static void drawMenu(int selected, int top, int visible, char const * message)
     drawMessage(message);
     cv.setPenColor(Color::BrightBlack);
     cv.drawText(4, 213, "Enter:play \x1b\x1a:TV M:man G:codes");
-    cv.drawText(4, 222, "S/L:save/load state  K:keys");
+    cv.drawText(4, 222, "S/L:save/load K:keys F:files");
     cv.drawText(4, 231, "F1:rst F2/3:vol F10:cheat");
   } else {
     if (moved) {
@@ -521,9 +522,9 @@ static int chooseRom(char const * message, int * slot)
       // over serial: a number starts that game, m and a number shows its manual
       if (Serial.available()) {
         int c = Serial.peek();
-        if (c == 'k') {
+        if (c == 'k' || c == 'f') {
           Serial.read();
-          message = editPadKeys();
+          message = c == 'k' ? editPadKeys() : fileManager();
           s_shown.valid = false;
           break;
         }
@@ -570,6 +571,10 @@ static int chooseRom(char const * message, int * slot)
     switch (vk) {
       case fabgl::VK_k: case fabgl::VK_K:
         message = editPadKeys();
+        s_shown.valid = false;
+        break;
+      case fabgl::VK_f: case fabgl::VK_F:
+        message = fileManager();
         s_shown.valid = false;
         break;
       case fabgl::VK_g: case fabgl::VK_G:
@@ -1279,6 +1284,251 @@ static char const * editPadKeys()
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// the file manager: what is in SPIFFS, by game, to delete saves and states of games that are no
+// longer built in (their files carry the ROM's CRC, which no game in the list has any more)
+
+struct SpiffsFile {
+  String path;
+  size_t size;
+  int    game;                     // index in g_roms, -1: a removed game, -2: not a game's file
+};
+
+
+static std::vector<SpiffsFile> listSpiffs()
+{
+  // each game's file name start: "/<stem>_<crc>."
+  std::vector<String> prefixes;
+  for (int i = 0; i < g_romCount; ++i) {
+    String p = savePathFor(g_roms[i], "");
+    prefixes.push_back(p + ".");
+  }
+  std::vector<SpiffsFile> files;
+  File root = SPIFFS.open("/");
+  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
+    SpiffsFile e { String("/") + f.name(), f.size(), -2 };
+    if (e.path.startsWith("//"))
+      e.path = e.path.substring(1);           // some core versions give the name with its slash
+    for (int i = 0; i < g_romCount && e.game == -2; ++i)
+      if (e.path.startsWith(prefixes[i]))
+        e.game = i;
+    // "_" and 8 hex digits before the extension: a game's file, of a game that is gone
+    int dot = e.path.lastIndexOf('.');
+    if (e.game == -2 && dot >= 10 && e.path[dot - 9] == '_') {
+      bool hex = true;
+      for (int k = dot - 8; k < dot; ++k)
+        hex &= isxdigit((unsigned char) e.path[k]) != 0;
+      if (hex)
+        e.game = -1;
+    }
+    files.push_back(e);
+  }
+  // by game (removed ones last), then by name
+  std::sort(files.begin(), files.end(), [](SpiffsFile const & a, SpiffsFile const & b) {
+    int ga = a.game < 0 ? INT_MAX - 2 - a.game : a.game, gb = b.game < 0 ? INT_MAX - 2 - b.game : b.game;
+    return ga != gb ? ga < gb : a.path < b.path;
+  });
+  return files;
+}
+
+
+// what a file is, from its extension
+static char const * fileKind(String const & path)
+{
+  if (path == KEYS_PATH)          return "Keys";
+  if (path.endsWith(".sav"))      return "Save";
+  if (path.endsWith(".cht"))      return "Codes";
+  if (path.endsWith(".st1"))      return "State 1";
+  if (path.endsWith(".st2"))      return "State 2";
+  if (path.endsWith(".stn"))      return "State tmp";
+  return "?";
+}
+
+
+// One line of 32 characters: whose, what, how big.
+static void fileLine(SpiffsFile const & f, char * line)
+{
+  String who;
+  if (f.game >= 0)
+    who = g_roms[f.game].title;
+  else if (f.game == -1)
+    who = f.path.substring(1, f.path.lastIndexOf('.') - 9);   // the stem of the ROM's name
+  else
+    who = f.path == KEYS_PATH ? "Settings" : f.path.substring(1);
+  if (who.length() > 14)
+    who = who.substring(0, 14);
+  char size[8];
+  if (f.size < 1000)
+    snprintf(size, sizeof(size), "%uB", (unsigned) f.size);
+  else
+    snprintf(size, sizeof(size), "%u.%uK", (unsigned)(f.size / 1024), (unsigned)(f.size % 1024 * 10 / 1024));
+  snprintf(line, 33, "%-14s %-9s %6s", who.c_str(), fileKind(f.path), size);
+}
+
+
+// The screen: Up/Down select, Del deletes the selected file, O all files of removed games (both
+// ask first), Esc goes back. Over serial: n/p select, d deletes, o removed games, y/n answer, ~ back.
+static char const * fileManager()
+{
+  static constexpr int TOP = 30, ROWS = 18;
+  fabgl::Canvas & cv = *s_canvas;
+  auto kb = PS2.keyboard();
+  std::vector<SpiffsFile> files = listSpiffs();
+  int selected = 0, top = 0;
+  char const * message = nullptr;
+  bool changed = false;
+
+  for (auto const & f : files) {
+    char line[33];
+    fileLine(f, line);
+    Serial.printf("  %s %s%s\n", line, f.path.c_str(), f.game == -1 ? " (removed game)" : "");
+  }
+
+  cv.setBrushColor(Color::Black);
+  cv.clear();
+  cv.setPenColor(Color::BrightYellow);
+  cv.drawText(0, 4, "FILES");
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 222, "Del:delete O:of removed games");
+  cv.drawText(0, 231, "Esc:back      red: game removed");
+
+  // one key: VK_NONE when there is none yet; serial letters stand for keys
+  auto nextKey = [&]() {
+    fabgl::VirtualKey vk = fabgl::VK_NONE;
+    if (Serial.available()) {
+      switch (Serial.read()) {
+        case 'n': vk = fabgl::VK_DOWN; break;
+        case 'p': vk = fabgl::VK_UP; break;
+        case 'd': vk = fabgl::VK_DELETE; break;
+        case 'o': vk = fabgl::VK_o; break;
+        case 'y': vk = fabgl::VK_y; break;
+        case '~': vk = fabgl::VK_ESCAPE; break;
+        default:  vk = fabgl::VK_n; break;   // anything else answers no
+      }
+    } else if (kb->virtualKeyAvailable()) {
+      bool down;
+      vk = kb->getNextVirtualKey(&down, 0);
+      if (!down)
+        vk = fabgl::VK_NONE;
+    }
+    if (vk == fabgl::VK_NONE)
+      vTaskDelay(pdMS_TO_TICKS(20));
+    return vk;
+  };
+  auto drawMsg = [&](char const * text) {
+    char line[33];
+    snprintf(line, sizeof(line), "%-32s", text ? text : "");
+    if (text)
+      Serial.printf("Files: %s\n", text);
+    cv.setPenColor(Color::BrightRed);
+    cv.drawText(0, 208, line);
+  };
+  auto confirm = [&](char const * question) {
+    drawMsg(question);
+    cv.waitCompletion();
+    for (;;) {
+      auto vk = nextKey();
+      if (vk == fabgl::VK_y || vk == fabgl::VK_Y)
+        return true;
+      if (vk != fabgl::VK_NONE)
+        return false;
+    }
+  };
+  auto remove = [&](SpiffsFile const & f) {
+    s_soundGen->play(false);        // flash writes stop the cache, and the sound interrupt with it
+    bool ok = SPIFFS.remove(f.path);
+    s_soundGen->play(true);
+    Serial.printf("Removed %s: %s\n", f.path.c_str(), ok ? "ok" : "FAILED");
+    if (ok && f.path == KEYS_PATH)
+      loadPadKeys();                // back to the default keys
+    changed |= ok;
+    return ok;
+  };
+
+  for (;;) {
+    // the usage, then the list (every line padded, so nothing needs clearing)
+    char line[33];
+    snprintf(line, sizeof(line), "%u of %u KB used", (unsigned)(SPIFFS.usedBytes() / 1024), (unsigned)(SPIFFS.totalBytes() / 1024));
+    snprintf(line, sizeof(line), "%-26s", String(line).c_str());
+    cv.setPenColor(Color::White);
+    cv.drawText(48, 4, line);
+    selected = std::max(0, std::min(selected, (int) files.size() - 1));
+    top = std::max(0, std::min(top, selected));
+    if (selected >= top + ROWS)
+      top = selected - ROWS + 1;
+    for (int r = 0; r < ROWS; ++r) {
+      int i = top + r;
+      bool sel = i == selected;
+      if (i < (int) files.size())
+        fileLine(files[i], line);
+      else
+        snprintf(line, sizeof(line), "%-32s", i == 0 ? "(no files)" : "");
+      cv.setBrushColor(sel && i < (int) files.size() ? Color::Blue : Color::Black);
+      cv.setPenColor(i < (int) files.size() && files[i].game == -1 ? Color::BrightRed :
+                     sel ? Color::BrightWhite : Color::White);
+      cv.drawText(0, TOP + r * 9, line);
+    }
+    cv.setBrushColor(Color::Black);
+    drawMsg(message);
+    cv.waitCompletion();
+    message = nullptr;
+
+    fabgl::VirtualKey vk;
+    while ((vk = nextKey()) == fabgl::VK_NONE)
+      ;
+    switch (vk) {
+      case fabgl::VK_ESCAPE:
+        return changed ? "Files deleted" : nullptr;
+      case fabgl::VK_UP: case fabgl::VK_KP_UP:
+        --selected;
+        break;
+      case fabgl::VK_DOWN: case fabgl::VK_KP_DOWN:
+        ++selected;
+        break;
+      case fabgl::VK_PAGEUP: case fabgl::VK_KP_PAGEUP:
+        selected -= ROWS;
+        break;
+      case fabgl::VK_PAGEDOWN: case fabgl::VK_KP_PAGEDOWN:
+        selected += ROWS;
+        break;
+      case fabgl::VK_DELETE: case fabgl::VK_KP_DELETE: case fabgl::VK_BACKSPACE: {
+        if (files.empty())
+          break;
+        SpiffsFile const & f = files[selected];
+        char question[33];
+        snprintf(question, sizeof(question), "Delete %s? Y/N", f.game >= 0 || f.game == -1 ? fileKind(f.path) : "it");
+        if (confirm(question)) {
+          if (remove(f)) {
+            files.erase(files.begin() + selected);
+            message = "Deleted";
+          } else
+            message = "Could not delete it";
+        }
+        break;
+      }
+      case fabgl::VK_o: case fabgl::VK_O: {
+        int n = std::count_if(files.begin(), files.end(), [](SpiffsFile const & f) { return f.game == -1; });
+        if (!n) {
+          message = "No files of removed games";
+          break;
+        }
+        char question[33];
+        snprintf(question, sizeof(question), "Delete %d file%s of removed? Y/N", n, n == 1 ? "" : "s");
+        if (confirm(question)) {
+          for (int i = files.size() - 1; i >= 0; --i)
+            if (files[i].game == -1 && remove(files[i]))
+              files.erase(files.begin() + i);
+          message = "Deleted";
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
 // a short message over the game picture ("CHEATS ON"), drawn into each line by the core that
 // draws them, so it does not flicker
 
@@ -1397,6 +1647,19 @@ static uint32_t hashSaveRam()
 }
 
 
+// The CRC32 of a game's ROM, worked out once (a few ms per 100 KB)
+static uint32_t romCrc(RomBlob const & rom)
+{
+  static std::vector<uint32_t> crcs;           // 0: not yet
+  int idx = &rom - g_roms;
+  if (crcs.empty())
+    crcs.resize(g_romCount);
+  if (!crcs[idx])
+    crcs[idx] = crc32_le(0, rom.data, rom.size);
+  return crcs[idx];
+}
+
+
 // SPIFFS names are at most 31 characters: a readable start of the ROM's name, then the CRC32 of
 // its contents, so a renamed ROM keeps its save
 static String savePathFor(RomBlob const & rom, char const * ext)
@@ -1409,7 +1672,7 @@ static String savePathFor(RomBlob const & rom, char const * ext)
     stem += isalnum((unsigned char) c) ? c : '_';
   }
   char crc[10];
-  snprintf(crc, sizeof(crc), "_%08x", (unsigned) crc32_le(0, rom.data, rom.size));
+  snprintf(crc, sizeof(crc), "_%08x", (unsigned) romCrc(rom));
   return "/" + stem + crc + ext;
 }
 

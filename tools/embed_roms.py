@@ -215,9 +215,11 @@ for i, g in enumerate(games):
             settings += "\n" + f.read()
     cfg = cString(settings) if settings.strip() else "nullptr"
 
-    entries.append("  { %s, %s, nesrom_%d, %d, %s, %d, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, picSize, manualRef, cfg))
+    with open(path, "rb") as f:
+        crc = zlib.crc32(f.read())
+    entries.append("  { %s, %s, nesrom_%d, %d, 0x%08x, %s, %d, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, crc, picRef, picSize, manualRef, cfg))
 
-cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr },"])
+cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, 0, nullptr, 0, nullptr, nullptr },"])
 cpp += ["};", "", "const int g_romCount = %d;" % len(games), ""]
 
 writeIfChanged(os.path.join(outDir, "roms.S"), "\n".join(asm) + "\n")

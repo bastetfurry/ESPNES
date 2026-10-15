@@ -29,7 +29,6 @@
 
 #include "fabgl.h"
 #include "esp_timer.h"
-#include "esp32/rom/crc.h"
 #include "esp32/rom/miniz.h"
 
 #include "nes/nes.h"
@@ -1647,21 +1646,8 @@ static uint32_t hashSaveRam()
 }
 
 
-// The CRC32 of a game's ROM, worked out once (a few ms per 100 KB)
-static uint32_t romCrc(RomBlob const & rom)
-{
-  static std::vector<uint32_t> crcs;           // 0: not yet
-  int idx = &rom - g_roms;
-  if (crcs.empty())
-    crcs.resize(g_romCount);
-  if (!crcs[idx])
-    crcs[idx] = crc32_le(0, rom.data, rom.size);
-  return crcs[idx];
-}
-
-
 // SPIFFS names are at most 31 characters: a readable start of the ROM's name, then the CRC32 of
-// its contents, so a renamed ROM keeps its save
+// its contents (worked out by tools/embed_roms.py), so a renamed ROM keeps its save
 static String savePathFor(RomBlob const & rom, char const * ext)
 {
   String stem;
@@ -1672,7 +1658,7 @@ static String savePathFor(RomBlob const & rom, char const * ext)
     stem += isalnum((unsigned char) c) ? c : '_';
   }
   char crc[10];
-  snprintf(crc, sizeof(crc), "_%08x", (unsigned) romCrc(rom));
+  snprintf(crc, sizeof(crc), "_%08x", (unsigned) rom.crc);
   return "/" + stem + crc + ext;
 }
 

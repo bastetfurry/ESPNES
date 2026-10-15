@@ -10,7 +10,9 @@ struct RomBlob {
   char const *    title;      // name shown in the menu
   uint8_t const * data;       // in flash, mapped through the cache
   size_t          size;
-  uint8_t const * picture;    // PICTURE_SIZE x PICTURE_SIZE NES colour numbers, or nullptr
+  uint8_t const * picture;    // PICTURE_SIZE x PICTURE_SIZE NES colour numbers, raw deflate
+                              // compressed (no zlib header), or nullptr
+  size_t          pictureSize; // compressed
   char const *    manual;     // pages, or nullptr (format below)
   char const *    config;     // settings, "key = value" per line (CSV options + <name>.cfg), or nullptr
 };

@@ -100,7 +100,9 @@ closest to the block's average, without dithering, so flat areas stay flat and e
 Photos and box art are averaged and Floyd-Steinberg dithered. Text smaller than about 16 pixels
 does not survive the scaling; a picture cropped to the logo works better than a full title
 screen. Converted pictures are cached in
-`src/generated/pics/`. A missing picture is a build warning and an empty square in the menu.
+`src/generated/pics/`. In the firmware they are raw deflate compressed (about 300-700 bytes
+instead of 4 KB) and unpacked with the inflate in the ESP32's mask ROM, so the decoder costs no
+flash. A missing picture is a build warning and an empty square in the menu.
 `python3 tools/nesimage.py picture.png preview.ppm` shows what a picture will look like.
 
 The manual is a text file in `roms/` of teletext style pages, 32 columns by 25 lines, opened with M

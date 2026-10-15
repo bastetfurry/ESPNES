@@ -27,6 +27,7 @@
 #include "fabgl.h"
 #include "esp_timer.h"
 #include "esp32/rom/crc.h"
+#include "esp32/rom/miniz.h"
 
 #include "nes/nes.h"
 #include "nes/palette.h"
@@ -225,15 +226,37 @@ static void drawMessage(char const * message)
 }
 
 
+// Unpacks a picture with the inflate in the ESP32's ROM (no code of ours in flash). Its decoder
+// state is about 11 KB, too much for the stack: it and the picture are on the heap only while
+// drawing.
+struct PictureUnpack {
+  tinfl_decompressor state;
+  uint8_t            pixels[PICTURE_SIZE * PICTURE_SIZE];
+};
+
+static bool unpackPicture(RomBlob const & rom, PictureUnpack * u)
+{
+  if (!rom.picture)
+    return false;
+  tinfl_init(&u->state);
+  size_t inSize = rom.pictureSize, outSize = sizeof(u->pixels);
+  tinfl_status st = tinfl_decompress(&u->state, rom.picture, &inSize, u->pixels, u->pixels, &outSize,
+                                     TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  return st == TINFL_STATUS_DONE && outSize == sizeof(u->pixels);
+}
+
+
 // straight into the frame buffer; call once the canvas has finished drawing
 static void drawPicture(int idx)
 {
-  uint8_t const * pic = g_roms[idx].picture;
+  auto * u = (PictureUnpack *) malloc(sizeof(PictureUnpack));
+  uint8_t const * pic = u && unpackPicture(g_roms[idx], u) ? u->pixels : nullptr;
   for (int y = 0; y < PICTURE_SIZE; ++y) {
     uint8_t * line = s_lines[PIC_Y + y];
     for (int x = 0; x < PICTURE_SIZE; ++x)   // the DMA's byte order
       line[(PIC_X + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
+  free(u);
 }
 
 

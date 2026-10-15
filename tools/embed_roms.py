@@ -15,7 +15,8 @@
 # change, so an unchanged set does not trigger a rebuild.
 #
 # Pictures: a PNG is scaled to fit 64x64 in NES palette colours (tools/nesimage.py): pixel art
-# keeps its own colours, photos are dithered.
+# keeps its own colours, photos are dithered. Stored raw deflate compressed (the ESP32's ROM has
+# the decoder), about a tenth of the 4 KB.
 # A missing picture is a warning; the menu then shows an empty square.
 #
 # Manuals: teletext style pages of 32x25 characters with phpBB style tags, converted to a cut-down
@@ -26,6 +27,7 @@
 # settings, one "key = value" per line; it is merged after the CSV's options.
 
 import csv
+import zlib
 import os
 import sys
 
@@ -181,8 +183,11 @@ for i, g in enumerate(games):
     cpp.append("extern const uint8_t nesrom_%d[];" % i)
 
     pic = picture(g)
-    picRef = "nullptr"
+    picRef, picSize = "nullptr", 0
     if pic:
+        packer = zlib.compressobj(9, zlib.DEFLATED, -15)      # raw deflate, no zlib header
+        pic = packer.compress(pic) + packer.flush()
+        picSize = len(pic)
         cpp.append("static const uint8_t picture_%d[%d] = {" % (i, len(pic)))
         for k in range(0, len(pic), 32):
             cpp.append("  " + ",".join(str(b) for b in pic[k:k + 32]) + ",")
@@ -210,9 +215,9 @@ for i, g in enumerate(games):
             settings += "\n" + f.read()
     cfg = cString(settings) if settings.strip() else "nullptr"
 
-    entries.append("  { %s, %s, nesrom_%d, %d, %s, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, manualRef, cfg))
+    entries.append("  { %s, %s, nesrom_%d, %d, %s, %d, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, picRef, picSize, manualRef, cfg))
 
-cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, nullptr, nullptr, nullptr },"])
+cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr },"])
 cpp += ["};", "", "const int g_romCount = %d;" % len(games), ""]
 
 writeIfChanged(os.path.join(outDir, "roms.S"), "\n".join(asm) + "\n")

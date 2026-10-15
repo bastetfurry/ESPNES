@@ -11,3 +11,7 @@ __pycache__/
 resume.sh
 # local test ROMs: not built in, not in git (see README)
 roms-test/
+# generated from sdkconfig.defaults by the ESP-IDF build
+sdkconfig.pico32
+sdkconfig.old
+dependencies.lock

@@ -1177,7 +1177,9 @@ bool FileBrowser::format(DriveType driveType, int drive)
 
 bool FileBrowser::format(DriveType driveType, int drive)
 {
+  #if ESP_IDF_VERSION_MAJOR < 5
   esp_task_wdt_init(45, false);
+  #endif
 
   if (driveType == DriveType::SDCard && s_SDCardMounted) {
 
@@ -1197,7 +1199,12 @@ bool FileBrowser::format(DriveType driveType, int drive)
     }
 
     // make filesystem
+    #if ESP_IDF_VERSION_MAJOR >= 5
+    MKFS_PARM opt = { FM_ANY, 0, 0, 0, 16 * 1024 };
+    if (f_mkfs(drv, &opt, buffer, FF_MAX_SS) != FR_OK) {
+    #else
     if (f_mkfs(drv, FM_ANY, 16 * 1024, buffer, FF_MAX_SS) != FR_OK) {
+    #endif
       free(buffer);
       return false;
     }

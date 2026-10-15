@@ -3,13 +3,11 @@
   "keywords": "sprite, terminal, VT100, ANSI, keyboard, mouse, VGA, PAL, NTSC, Composite, SSD1306, ILI9341, ST7789, OLED, DS3231, I2S, I2C, game, engine, PS2, graphics, audio, sound, font, arduino, ESP32, display, vic20, emulator, 8086, z80, 6502",
   "description": "ESP32 VGA Controller, Composite PAL/NTSC Controller, PS/2 Mouse and Keyboard Controller, Graphics Library, Sound Engine, Game Engine and ANSI/VT Terminal",
   "homepage": "http://www.fabglib.org",
-  "repository":
-  {
+  "repository": {
     "type": "git",
     "url": "https://github.com/fdivitto/FabGL.git"
   },
-  "authors":
-  [
+  "authors": [
     {
       "name": "Fabrizio Di Vittorio",
       "email": "fdivitto2013@gmail.com",
@@ -18,8 +16,32 @@
     }
   ],
   "version": "1.0.9",
-  "frameworks": ["espidf", "arduino"],
+  "frameworks": [
+    "espidf",
+    "arduino"
+  ],
   "platforms": "espressif32",
   "headers": "fabgl.h",
-  "includeDir": "src"
+  "includeDir": "src",
+  "build": {
+    "srcFilter": [
+      "-<*>",
+      "+<canvas.cpp>",
+      "+<codepages.cpp>",
+      "+<displaycontroller.cpp>",
+      "+<fabfonts.cpp>",
+      "+<fabutils.cpp>",
+    "+<fabui_stub.cpp>",
+      "+<ulp_macro_ex.cpp>",
+      "+<comdrivers/ps2controller.cpp>",
+      "+<comdrivers/ps2device.cpp>",
+      "+<devdrivers/keyboard.cpp>",
+      "+<devdrivers/kbdlayouts.cpp>",
+      "+<devdrivers/mouse.cpp>",
+      "+<devdrivers/soundgen.cpp>",
+      "+<devdrivers/swgenerator.cpp>",
+      "+<dispdrivers/vgabasecontroller.cpp>",
+      "+<dispdrivers/vgacontroller.cpp>"
+    ]
+  }
 }

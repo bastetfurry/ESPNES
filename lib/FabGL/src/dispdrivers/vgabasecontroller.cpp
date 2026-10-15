@@ -714,7 +714,7 @@ void VGABaseController::setDMABufferView(int index, int row, int scan, bool isSt
 void volatile * VGABaseController::getDMABuffer(int index, int * length)
 {
   *length = m_DMABuffers[index].length;
-  return m_DMABuffers[index].buf;
+  return (void volatile *) m_DMABuffers[index].buf;
 }
 
 

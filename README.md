@@ -263,10 +263,19 @@ pio device monitor
 
 The 512 KB SPIFFS partition is formatted on the first boot and holds the save games.
 
+The firmware is plain ESP-IDF 5.2 (espressif32 6.7.0), without the Arduino core: that saved
+155 KB of flash, mostly newlib's full printf/scanf (the IDF uses the nano one in the ESP32's ROM).
+The few Arduino APIs the code uses (`Serial`, `String`, `SPIFFS` and `File`, `millis`, the GPIO
+calls) are in `src/compat.*`; the IDF's settings in `sdkconfig.defaults` (after changing it, delete
+`sdkconfig.pico32` so it is generated again). FabGL 1.0.9 was made for IDF 4.4: the files ESPNES
+uses are patched for 5.x, the others are left out of the build (`lib/FabGL/VENDORED.md`). The
+first build downloads the ESP-IDF package.
+
 ## Layout
 
 - `src/nes/` the emulator core, plain C++ without ESP32 dependencies
 - `src/main.cpp` the ESP32 side: VGA, keyboard, ROM list, frame pacing
+- `src/compat.*` the Arduino APIs main.cpp uses, on ESP-IDF
 - `host/` PC build of the core: nestest check, frame dumps to PPM (`async` draws on a second
   thread like the ESP32 build), sound to WAV (`wav=file.wav`), save RAM in and out (`sram=file`), a trace of PPU register writes per scanline and dot
   (`trace=FROM-TO` frames), RAM bytes at the end or on every change (`ram=`, `watch=`), the

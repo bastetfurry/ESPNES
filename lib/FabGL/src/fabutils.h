@@ -47,6 +47,18 @@
 #include "soc/frc_timer_reg.h"
 #include "rom/lldesc.h"
 
+// ESPNES: ESP-IDF 5 no longer includes these through the headers above
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION_MAJOR >= 5
+  #include "esp_timer.h"
+  #include "soc/io_mux_reg.h"
+  #include "soc/rtc_io_reg.h"
+  #include "soc/gpio_sig_map.h"
+  #include "soc/gpio_periph.h"
+  #include "esp32/rom/gpio.h"
+  #include "driver/gpio.h"
+#endif
+
 #ifdef ARDUINO
 #include "Arduino.h"
 #endif

@@ -21,8 +21,7 @@
 // Serial console: a number starts that ROM from the list, 'k' sets the keys, 'q' leaves the game, and
 // a b e s u d l r tap A, B, sElect, Start and the directions.
 
-#include <Arduino.h>
-#include <SPIFFS.h>
+#include "compat.h"
 #include <vector>
 #include <algorithm>
 #include <atomic>
@@ -1979,14 +1978,15 @@ static void runGame()
     }
 
     if (now - statStart >= 5000000) {
-      Serial.printf("%.1f fps (%.1f drawn), emulation %lld us/frame avg, %lld worst (budget %lld)\n",
+      // (the IDF's printf, newlib nano, has no long long)
+      Serial.printf("%.1f fps (%.1f drawn), emulation %d us/frame avg, %d worst (budget %d)\n",
                     frames * 1e6 / (now - statStart), drawn * 1e6 / (now - statStart),
-                    busy / frames, worst, period);
+                    (int)(busy / frames), (int) worst, (int) period);
       Serial.printf("  sound buffer %u samples, lowest %u (target %u)\n", (unsigned) ringFill(), (unsigned) minFill, (unsigned) audioTarget);
       minFill = RING_SIZE;
       if (drawn)
-        Serial.printf("  core 0 drawing %llu us/frame, core 1 waiting for it %llu us/frame\n",
-                      drawCycles / drawn / 240, waitCycles / drawn / 240);
+        Serial.printf("  core 0 drawing %u us/frame, core 1 waiting for it %u us/frame\n",
+                      (unsigned)(drawCycles / drawn / 240), (unsigned)(waitCycles / drawn / 240));
       waitCycles = drawCycles = 0;
       statStart = now;
       busy = worst = 0;
@@ -2049,6 +2049,8 @@ void setup()
 }
 
 
-void loop()
+// the IDF's entry point, in the main task on core 1 (sdkconfig.defaults)
+extern "C" void app_main()
 {
+  setup();
 }

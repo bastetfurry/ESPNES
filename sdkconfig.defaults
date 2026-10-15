@@ -1,0 +1,31 @@
+# ESP-IDF settings for ESPNES (plain ESP-IDF, no Arduino core). Applied when sdkconfig.pico32 is
+# generated; delete that file after changing this one.
+
+# CPU and flash as with the Arduino build: 240 MHz, the PICO-D4's 4 MB flash in DIO at 80 MHz
+CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The IDF itself small; our code and FabGL are built with -O2 (src/CMakeLists.txt, build_flags)
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# printf without floats: newlib's nano formatting, which the ESP32's mask ROM holds
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# The emulation runs in the main task on core 1, as Arduino's loop task did, with its stack
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+# the emulation keeps core 1 busy: no idle task watchdog there (Arduino has none either)
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# FabGL's PS/2 driver runs on the ULP coprocessor
+CONFIG_ESP32_ULP_COPROC_ENABLED=y
+CONFIG_ESP32_ULP_COPROC_RESERVE_MEM=512
+
+# quiet boot, no core dumps
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y

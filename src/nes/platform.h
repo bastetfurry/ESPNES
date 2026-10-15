@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef ARDUINO
+#ifdef ESP_PLATFORM          // any ESP32 build (ESP-IDF, with or without Arduino)
   #include "esp_attr.h"
   #include "xtensa/core-macros.h"
   // CPU clock cycles, for profiling

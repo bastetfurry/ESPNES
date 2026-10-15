@@ -268,6 +268,11 @@ at row n / 16, column n % 16; light pixels are set. The build converts them
 glyphs in a terminal, `python3 tools/nesfont.py export` writes FabGL's originals back (overwriting
 the pictures).
 
+The logo in the ROM list is drawn from the font: a 32 x 16 block of 4 x 2 glyphs, 0xEC-0xEF over
+0xFC-0xFF (the bottom right corner of `font8x8.png`). Glyphs that must keep their shape: 0x10 (the
+paused game's arrow), 0x18-0x1B (arrows in key names and the help line), 0xFB (a used savestate
+slot), and the letters and umlauts the manuals use.
+
 ## Build & flash
 
 ```sh

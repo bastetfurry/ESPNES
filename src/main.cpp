@@ -298,8 +298,12 @@ static void drawMenu(int selected, int top, int visible, char const * message)
   if (full) {
     cv.setBrushColor(Color::Black);
     cv.clear();
+    // the logo: 4 x 2 glyphs of the font (fonts/font8x8.png, 0xEC-0xEF over 0xFC-0xFF)
+    cv.setPenColor(Color::BrightRed);
+    cv.drawText(4, 2, "\xec\xed\xee\xef");
+    cv.drawText(4, 10, "\xfc\xfd\xfe\xff");
     cv.setPenColor(Color::BrightYellow);
-    cv.drawText(8, 4, "ESPNES");
+    cv.drawText(40, 6, "ESPNES");
     drawRegion();
     if (!g_romCount) {
       cv.setPenColor(Color::BrightRed);

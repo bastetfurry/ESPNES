@@ -88,9 +88,9 @@ connected). Real pads and keys work at the same time.
 - The data lines need a pull-up, so an unplugged pad reads as no buttons: the firmware turns on
   the internal one. GPIO 34-39 have none and need an external one (10 kΩ to 3.3 V).
 - Taken: VGA 4, 5, 15, 18, 19, 21, 22, 23; PS/2 keyboard 32, 33; sound 25. Avoid the strapping
-  pins 0, 2 and 12. Left as candidates (on a TTGO VGA32 style board): 13 and 14 (the SD slot's,
-  free without a card), 26 and 27 (the second PS/2 port, if nothing is plugged in), and 34-39
-  for data lines only (inputs, external pull-up).
+  pins 0, 2 and 12. Left as candidates (on a LilyGO/TTGO VGA32): 13 and 14 (the SD slot's on
+  boards that have one; the older board ESPNES runs on has none), 26 and 27 only if the second
+  PS/2 socket (mouse) stays empty, and 34-39 for data lines only (inputs, external pull-up).
 - NES port, pin 1 GND, 2 clock, 3 latch, 4 data, 7 +V (pins 5 and 6 are the Zapper's); check
   with a meter, clones and extension cables differ.
 

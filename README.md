@@ -258,6 +258,16 @@ Each extra line costs about 23 us on the ESP32: PAL games at 100% use about 17.5
 per frame. NTSC frames are shorter (16.6 ms), so heavy NTSC games may start skipping frames near
 100%; the serial statistics show how close a game gets.
 
+## Fonts
+
+The firmware's two fonts are pictures in `fonts/`, for any paint program (Aseprite with a grid of
+the glyph size works well): `font8x8.png` (menu, manuals, key mapper, messages over the game) and
+`font4x6.png` (the small labels on the drawn pad). 16 x 16 glyphs in code page 437 order, glyph n
+at row n / 16, column n % 16; light pixels are set. The build converts them
+(`src/generated/fonts.cpp`); `python3 tools/nesfont.py show fonts/font8x8.png` shows the printable
+glyphs in a terminal, `python3 tools/nesfont.py export` writes FabGL's originals back (overwriting
+the pictures).
+
 ## Build & flash
 
 ```sh
@@ -285,6 +295,7 @@ first build downloads the ESP-IDF package.
   (`trace=FROM-TO` frames), RAM bytes at the end or on every change (`ram=`, `watch=`), the
   nametables as text (`ntdump`), a benchmark
 - `lib/FabGL/` FabGL 1.0.9, vendored (see `lib/FabGL/VENDORED.md`)
+- `fonts/` the fonts as pictures (see "Fonts")
 - `roms/` built into the firmware by `tools/embed_roms.py`
 - `testroms/` test ROMs for the host harness (nestest, AccuracyCoin)
 - `roms-test/` local ROMs for testing with the host harness, not built in and not in git

@@ -33,6 +33,7 @@
 #include "nes/nes.h"
 #include "nes/palette.h"
 #include "romindex.h"
+#include "fonts.h"
 
 
 static fabgl::VGAController   VGA;
@@ -1118,8 +1119,8 @@ static void drawPad(int player)
   cv.fillRectangle(196, AB_Y - 12, 220, AB_Y + 12);
   cv.setPenColor(Color::BrightRed);
   cv.setBrushColor(Color::Black);
-  cv.drawText(&fabgl::FONT_4x6, 104, AB_Y + 16, "SELECT");
-  cv.drawText(&fabgl::FONT_4x6, 134, AB_Y + 16, "START");
+  cv.drawText(&FONT_4x6, 104, AB_Y + 16, "SELECT");
+  cv.drawText(&FONT_4x6, 134, AB_Y + 16, "START");
   cv.drawText(175, AB_Y + 16, "B");
   cv.drawText(205, AB_Y + 16, "A");
   for (int b = 0; b < (player ? PAD_KEYS : 8); ++b)
@@ -1544,7 +1545,7 @@ static void overlayHook(void *, int y, uint8_t * line)
     uint8_t px = bg;
     if (row >= 0 && row < 8 && x >= 8 && x < 8 + len * 8) {
       uint8_t ch = s_overlayText[(x - 8) >> 3];
-      uint8_t bits = fabgl::FONT_8x8.data[ch * 8 + row];
+      uint8_t bits = FONT_8x8.data[ch * 8 + row];
       if (bits & (0x80 >> ((x - 8) & 7)))
         px = fg;
     }
@@ -2011,7 +2012,7 @@ void setup()
   initVideo();
   initSound();
   s_canvas = new fabgl::Canvas(&VGA);
-  s_canvas->selectFont(&fabgl::FONT_8x8);
+  s_canvas->selectFont(&FONT_8x8);
   s_canvas->setGlyphOptions(GlyphOptions().FillBackground(true));
 
   char const * message = nullptr;

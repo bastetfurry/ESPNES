@@ -65,11 +65,18 @@ are emulated at 50 frames per second on the 60 Hz signal.
 | Select | Shift             |
 | Start  | Space             |
 
+These are the defaults. K in the ROM list opens the key mapper: a drawn pad where the button being
+set blinks; press a key for each button in turn (Up, Down, Left, Right, Select, Start, B, A). A key
+another button already has swaps with it, Esc cancels. The keys are the same for all games and
+kept in SPIFFS (`/keys.cfg`), written only when they change. Left and right Ctrl/Alt/Shift count
+as one key, a letter works with Shift held, and the numpad counts as the arrow/navigation keys.
+Esc, F1-F3 and F10 cannot be used.
+
 Esc goes back to the ROM list, F1 resets, F2/F3 turn the volume down/up, F10 switches cheats. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `k` opens the key mapper (a letter, digit or space sets the next button, `^` takes the defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
 
 ## ROMs
 

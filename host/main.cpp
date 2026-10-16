@@ -27,7 +27,9 @@
 //                                         trap=SPEC (from tools/tapetrap.py) traps the game's
 //                                         tape save/load: the data goes to/comes from trapfile=FILE
 //                                         (a SPEC with call addresses 0 is Family BASIC's: the file
-//                                         is the 128 byte header and the data)
+//                                         is the 128 byte header and the data);
+//                                         song=N plays song N of an NSF (default: its first),
+//                                         nofds leaves its FDS sound out
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -205,6 +207,8 @@ static int run(int argc, char ** argv)
   Tape tape;
   char const * tapeRecPath = nullptr;
   int tapeRecAt = -1, tapePlayAt = -1;
+  int song = 0;
+  bool noFds = false;
   unsigned trapSave = 0, trapLoad = 0;
   std::vector<std::pair<int, int>> trapBlocks;
   char const * trapPath = nullptr;
@@ -314,6 +318,10 @@ static int run(int argc, char ** argv)
       keyHolds.push_back(h);
       nes.setFamiKeyboard(true);
     }
+    else if (!strcmp(argv[i], "nofds"))
+      noFds = true;
+    else if (!strncmp(argv[i], "song=", 5))
+      song = atoi(argv[i] + 5);
     else if (!strncmp(argv[i], "trapfile=", 9))
       trapPath = argv[i] + 9;
     else if (!strncmp(argv[i], "mic=", 4))
@@ -345,6 +353,14 @@ static int run(int argc, char ** argv)
       fclose(sf);
     }
   nes.powerOn();
+  if (nes.isNsf()) {
+    NsfInfo const & n = nes.nsf();
+    nes.nsfStart(song ? song : n.firstSong);
+    if (noFds)
+      nes.apu.fdsOn = false;                    // for comparing: the 2A03 alone
+    printf("NSF \"%s\" by %s, (c) %s: song %d of %d, chips $%02X, %s\n", n.title, n.artist, n.copyright,
+           nes.nsfSong(), n.songs, n.chips, nes.region() == Region::PAL ? "PAL" : "NTSC");
+  }
   if (cheatCount) {
     nes.setCheats(cheats, cheatCount);
     nes.enableCheats(true);

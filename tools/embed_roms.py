@@ -2,6 +2,7 @@
 #
 # roms/settings.csv lists the games in menu order, one per line:
 #   "file name.nes", "name shown in the menu", "picture.png", "manual.txt", options
+# (NSF music files, .nsf, are listed the same way.)
 # Lines starting with # are comments. Options are "key=value" pairs separated by ';' (see
 # RomConfig in src/main.cpp: save, region, overclock). A ROM in roms/
 # that the CSV does not list is still built in, after the listed ones, named after its file.
@@ -109,7 +110,7 @@ def writeIfChanged(path, data):
 
 # --- the game list ---
 
-files = sorted((f for f in os.listdir(romDir) if f.lower().endswith(".nes")) if os.path.isdir(romDir) else [],
+files = sorted((f for f in os.listdir(romDir) if f.lower().endswith((".nes", ".nsf"))) if os.path.isdir(romDir) else [],
                key=str.lower)
 games = []           # dicts: file, name, picture, manual, options
 listed = set()
@@ -121,7 +122,7 @@ if os.path.exists(csvPath):
             if not row or not "".join(row).strip() or row[0].lstrip().startswith("#"):
                 continue
             row = [field.strip() for field in row]
-            if len(row) < 2 or not row[0].lower().endswith(".nes") or any('"' in field for field in row):
+            if len(row) < 2 or not row[0].lower().endswith((".nes", ".nsf")) or any('"' in field for field in row):
                 warn("settings.csv line %d looks malformed (a missing quote?): %s" % (lineNo, row))
                 continue
             row += [""] * (5 - len(row))

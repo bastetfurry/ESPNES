@@ -229,9 +229,25 @@ void Apu::reset(Region region)
   m_seqPositions = region == Region::PAL ? s_seq4PAL : s_seq4NTSC;
 
   m_hpPrevIn = m_hpPrevOut = 0;
+  m_fdsLowpass = 0;
+  fds.reset();
+  for (int i = 0; i < METERS; ++i) {
+    m_meterMin[i] = 255;
+    m_meterMax[i] = 0;
+  }
   m_sampleCount = 0;
   setSampleRate(m_sampleRate);
   m_nextSample = m_cyclesPerSample;
+}
+
+
+void Apu::takeMeters(uint8_t out[METERS])
+{
+  for (int i = 0; i < METERS; ++i) {
+    out[i] = m_meterMax[i] > m_meterMin[i] ? m_meterMax[i] - m_meterMin[i] : 0;
+    m_meterMin[i] = 255;
+    m_meterMax[i] = 0;
+  }
 }
 
 
@@ -240,6 +256,9 @@ void Apu::setSampleRate(int rate, float adjust)
   m_sampleRate = rate;
   double cpuHz = m_region == Region::PAL ? 1662607.0 : 1789773.0;
   m_cyclesPerSample = (int64_t)(cpuHz * 65536.0 / (rate * adjust));
+  // one pole low-pass at 2 kHz: 1 - e^(-2 pi 2000 / rate)
+  double x = 2 * 3.14159265 * 2000.0 / rate;
+  m_fdsLowpassK = (int32_t)(1024 * (1 - 1 / (1 + x + x * x / 2 + x * x * x / 6)));
 }
 
 
@@ -306,6 +325,8 @@ NES_HOT void Apu::advance(int32_t n)
   m_tri.advance(n);
   m_noise.advance(n);
   advanceDmc(n);
+  if (NES_UNLIKELY(fdsOn))
+    fds.advance(n);
   m_cycle += n;
   m_seqCycle += n;
   m_accCycles += n;
@@ -317,7 +338,23 @@ NES_HOT void Apu::emitSample()
   int32_t cycles = m_accCycles ? m_accCycles : 1;
   // linear approximation of the NES mixer, in units of 1/100000 of full scale
   int32_t mix = ((m_pulse[0].acc + m_pulse[1].acc) * 752 + m_tri.acc * 851 + m_noise.acc * 494 + m_dmc.acc * 335) / cycles;
+  if (NES_UNLIKELY(metersOn)) {
+    meter(METER_PULSE1, m_pulse[0].acc / cycles);
+    meter(METER_PULSE2, m_pulse[1].acc / cycles);
+    meter(METER_TRIANGLE, m_tri.acc / cycles);
+    meter(METER_NOISE, m_noise.acc / cycles);
+    meter(METER_DMC, m_dmc.acc / cycles);
+    if (fdsOn)
+      meter(METER_FDS, fds.acc / cycles);
+  }
   m_pulse[0].acc = m_pulse[1].acc = m_tri.acc = m_noise.acc = m_dmc.acc = 0;
+  if (NES_UNLIKELY(fdsOn)) {
+    // at its loudest (63) about 2.4 times a pulse channel's (15 * 752)
+    int32_t level = fds.acc * 430 / cycles;
+    fds.acc = 0;
+    m_fdsLowpass += (level - m_fdsLowpass) * m_fdsLowpassK / 1024;
+    mix += m_fdsLowpass;
+  }
   m_accCycles = 0;
 
   // first order high-pass, about 30 Hz at 22 kHz: removes the DC offset like the console's output

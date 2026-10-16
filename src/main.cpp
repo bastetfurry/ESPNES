@@ -281,14 +281,14 @@ static bool unpackPicture(RomBlob const & rom, PictureUnpack * u)
 
 
 // straight into the frame buffer; call once the canvas has finished drawing
-static void drawPicture(int idx)
+static void drawPicture(int idx, int left = PIC_X, int top = PIC_Y)
 {
   auto * u = (PictureUnpack *) malloc(sizeof(PictureUnpack));
   uint8_t const * pic = u && unpackPicture(g_roms[idx], u) ? u->pixels : nullptr;
   for (int y = 0; y < PICTURE_SIZE; ++y) {
-    uint8_t * line = s_lines[PIC_Y + y];
+    uint8_t * line = s_lines[top + y];
     for (int x = 0; x < PICTURE_SIZE; ++x)   // the DMA's byte order
-      line[(PIC_X + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
+      line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
   free(u);
 }
@@ -1998,7 +1998,7 @@ static String savePathFor(RomBlob const & rom, char const * ext)
   String stem;
   for (char const * p = rom.name; *p && stem.length() < 14; ++p) {
     char c = *p;
-    if (c == '.' && !strcasecmp(p, ".nes"))
+    if (c == '.' && (!strcasecmp(p, ".nes") || !strcasecmp(p, ".nsf")))
       break;
     stem += isalnum((unsigned char) c) ? c : '_';
   }
@@ -2105,6 +2105,8 @@ struct FileSource : StateSource {
 // and only then replaces the slot, so a failed save leaves the old state. Returns a message.
 static char const * saveSlot(int idx, int slot)
 {
+  if (nes.isNsf())
+    return "Music has no savestates";
   RomBlob const & rom = g_roms[idx];
   String path = slotPath(rom, slot), temp = savePathFor(rom, ".stn");
   size_t old = 0;
@@ -2143,6 +2145,8 @@ static char const * saveSlot(int idx, int slot)
 // Into the freshly loaded game. Returns nullptr or a message.
 static char const * loadSlot(RomBlob const & rom, int slot)
 {
+  if (nes.isNsf())
+    return "Music has no savestates";
   File f = SPIFFS.open(slotPath(rom, slot), "r");
   if (!f)
     return "The slot is empty";
@@ -2158,6 +2162,7 @@ enum class TrapOp { NONE, SAVE, LOAD, WAIT_PC };
 static TrapOp         s_trapOp = TrapOp::NONE;
 static RomBlob const * s_trapRom;              // the game in the console (loadRom)
 static std::vector<uint8_t> s_trapFile;        // Family BASIC: the file being saved or loaded
+static bool           s_nsfFresh;              // music just started (loadRom): its time from 0
 
 
 // Returns nullptr or an error message.
@@ -2189,7 +2194,11 @@ static char const * loadRom(RomBlob const & rom)
   nes.enableVcCall(rom.tapeTrap && rom.tapeTrap->kind == TRAP_VC);
   nes.enablePortCall(rom.tapeTrap && rom.tapeTrap->kind == TRAP_FBASIC);
   s_trapFile.clear();
-  nes.powerOn();
+  if (nes.isNsf())
+    nes.nsfStart(nes.nsf().firstSong);
+  else
+    nes.powerOn();
+  s_nsfFresh = true;
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
                 nes.cart().info.chrSize / 1024, nes.cart().info.chrSize ? "" : " (RAM)",
@@ -2208,14 +2217,19 @@ static uint8_t filterPad(uint8_t b)
 }
 
 
-// the buttons of both players, keyboard and real pads together
-static void updatePads(uint8_t serialButtons)
+// the buttons of both players, keyboard and real pads together; returns player 1's
+static uint8_t updatePads(uint8_t serialButtons)
 {
-  uint8_t hw[2];
+  uint8_t hw[2], first = 0;
   readHardwarePads(hw);
-  for (int p = 0; p < 2; ++p)
-    nes.setButtons(p, filterPad(s_padState[p] | hw[p] | (p ? 0 : serialButtons)));
+  for (int p = 0; p < 2; ++p) {
+    uint8_t b = filterPad(s_padState[p] | hw[p] | (p ? 0 : serialButtons));
+    nes.setButtons(p, b);
+    if (!p)
+      first = b;
+  }
   nes.setMic(s_micState);
+  return first;
 }
 
 
@@ -2639,6 +2653,139 @@ static int trapKeyOf(fabgl::VirtualKey vk)
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// NSF music (see nes/nsf.h): instead of a picture, what plays. Left/Right on the pad change the
+// song, Start pauses; SysRq as in games.
+
+static bool     s_nsfPaused;
+static uint32_t s_nsfFrames;        // played of the current song
+static int      s_nsfShownSeconds;
+
+// a level bar per channel, between the picture and the song line
+static constexpr int  METER_X = 20, METER_Y = 118, METER_W = 24, METER_H = 36, METER_STEP = 36;
+static char const *   METER_NAMES[Apu::METERS] = { "P1", "P2", "TR", "NO", "DM", "FD" };
+static const uint8_t  METER_FULL[Apu::METERS] = { 15, 15, 15, 15, 64, 63 };
+static int            s_meterShown[Apu::METERS];   // pixels, falling back slowly
+
+static int nsfMeterCount()
+{
+  return nes.nsf().chips & NSF_FDS ? Apu::METERS : Apu::METER_FDS;
+}
+
+
+// every frame: the bars, rising at once, falling 2 pixels a frame
+static void drawNsfMeters()
+{
+  uint8_t level[Apu::METERS];
+  nes.apu.takeMeters(level);
+  fabgl::Canvas & cv = *s_canvas;
+  static const Color COLOURS[Apu::METERS] = { Color::BrightGreen, Color::BrightGreen, Color::BrightCyan,
+                                              Color::BrightYellow, Color::BrightMagenta, Color::BrightRed };
+  for (int i = 0; i < nsfMeterCount(); ++i) {
+    int h = (s_nsfPaused ? 0 : level[i]) * METER_H / METER_FULL[i];
+    if (h > METER_H)
+      h = METER_H;
+    if (h < s_meterShown[i] - 2)
+      h = s_meterShown[i] - 2;
+    if (h == s_meterShown[i])
+      continue;
+    int x = METER_X + i * METER_STEP;
+    cv.setBrushColor(Color::Black);
+    if (h < METER_H)
+      cv.fillRectangle(x, METER_Y, x + METER_W - 1, METER_Y + METER_H - 1 - h);
+    cv.setBrushColor(COLOURS[i]);
+    if (h > 0)
+      cv.fillRectangle(x, METER_Y + METER_H - h, x + METER_W - 1, METER_Y + METER_H - 1);
+    s_meterShown[i] = h;
+  }
+}
+
+// reset: a game powers on, music starts its song again
+static void resetConsole()
+{
+  if (nes.isNsf()) {
+    nes.nsfStart(nes.nsfSong());
+    s_nsfFrames = 0;
+  } else {
+    nes.powerOn();
+  }
+}
+
+
+static void drawNsfTime()
+{
+  char line[33];
+  unsigned seconds = s_nsfFrames / nes.frameRate();
+  snprintf(line, sizeof(line), "Song %3d of %-3d  %3u:%02u %s", nes.nsfSong(), nes.nsf().songs,
+           seconds / 60, seconds % 60, s_nsfPaused ? "PAUSE" : "     ");
+  fabgl::Canvas & cv = *s_canvas;
+  cv.setBrushColor(Color::Black);
+  cv.setPenColor(Color::BrightCyan);
+  cv.drawText(0, 168, line);
+  cv.waitCompletion();
+  s_nsfShownSeconds = seconds;
+}
+
+
+static void drawNsfScreen()
+{
+  NsfInfo const & n = nes.nsf();
+  fabgl::Canvas & cv = *s_canvas;
+  cv.setBrushColor(Color::Black);
+  cv.clear();
+  auto centred = [&](int y, char const * text, Color color) {
+    cv.setPenColor(color);
+    cv.drawText((256 - (int) strlen(text) * 8) / 2, y, text);
+  };
+  centred(12, n.title, Color::BrightYellow);
+  centred(24, n.artist, Color::White);
+  centred(36, n.copyright, Color::BrightBlack);
+  char chips[32];
+  snprintf(chips, sizeof(chips), "%s%s, %s", "2A03", n.chips & NSF_FDS ? " + FDS" : "",
+           nes.region() == Region::PAL ? "PAL" : "NTSC");
+  centred(184, chips, Color::White);
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(0, 224, "\x1b\x1a:song  Start:pause  SysRq:menu");
+  cv.waitCompletion();
+  // the bars' names
+  cv.setPenColor(Color::BrightBlack);
+  for (int i = 0; i < nsfMeterCount(); ++i)
+    cv.drawText(METER_X + i * METER_STEP + (METER_W - 16) / 2, METER_Y + METER_H + 2, METER_NAMES[i]);
+  cv.waitCompletion();
+  memset(s_meterShown, 0, sizeof(s_meterShown));
+  drawPicture(s_trapRom - g_roms, (256 - PICTURE_SIZE) / 2, 48);
+  drawNsfTime();
+}
+
+
+// every frame: the pad's Left, Right and Start, as they go down
+static void nsfFrame(uint8_t buttons)
+{
+  static uint8_t last;
+  uint8_t pressed = buttons & ~last;
+  last = buttons;
+  int song = nes.nsfSong();
+  if (pressed & (BTN_LEFT | BTN_RIGHT)) {
+    int songs = nes.nsf().songs;
+    song = pressed & BTN_RIGHT ? song % songs + 1 : (song + songs - 2) % songs + 1;
+    nes.nsfStart(song);
+    s_nsfFrames = 0;
+    s_nsfPaused = false;
+    Serial.printf("Song %d of %d\n", song, songs);
+    drawNsfTime();
+  }
+  if (pressed & BTN_START) {
+    s_nsfPaused = !s_nsfPaused;
+    drawNsfTime();
+  }
+  if (!s_nsfPaused)
+    ++s_nsfFrames;
+  if ((int)(s_nsfFrames / nes.frameRate()) != s_nsfShownSeconds)
+    drawNsfTime();
+  drawNsfMeters();
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
 // System menu: SysRq (Alt+PrintScreen) in every game, as in ESPPC. The game stands still while it
 // is open; the box is drawn over its picture, which the next frame paints again.
 
@@ -2758,7 +2905,7 @@ static bool systemMenu()
         case SysAction::CHEATS:   toggleCheats(); break;
         case SysAction::VOLUME:   break;
         case SysAction::LAYOUT:   break;
-        case SysAction::RESET:    nes.powerOn(); Serial.println("Reset"); return false;
+        case SysAction::RESET:    resetConsole(); Serial.println("Reset"); return false;
         case SysAction::ROMLIST:  return true;
       }
     }
@@ -2779,6 +2926,15 @@ static void runGame()
   s_famiMode = false;
   if (nes.famiKeyboard())
     setFamiMode(true);
+  bool music = nes.isNsf();
+  nes.apu.metersOn = music;
+  if (music) {
+    if (s_nsfFresh)
+      s_nsfFrames = 0;
+    s_nsfFresh = false;
+    s_nsfPaused = false;
+    drawNsfScreen();
+  }
 
   // NTSC 60.0988 Hz, PAL 50.007 Hz
   const int64_t period = nes.region() == Region::PAL ? 19997 : 16639;
@@ -2821,6 +2977,8 @@ static void runGame()
         // the time the menu was open is not to be caught up
         next = esp_timer_get_time();
         kb->emptyVirtualKeyQueue();
+        if (music)
+          drawNsfScreen();
         continue;
       }
       if (down && vk == fabgl::VK_SCROLLLOCK && nes.famiKeyboard()) {
@@ -2835,7 +2993,7 @@ static void runGame()
       if (!down)
         continue;
       if (vk == fabgl::VK_F1)
-        nes.powerOn();
+        resetConsole();
       if (vk == fabgl::VK_F10)
         toggleCheats();
       if (vk == fabgl::VK_F5)
@@ -2875,6 +3033,8 @@ static void runGame()
         if (systemMenu())
           return;
         next = esp_timer_get_time();
+        if (music)
+          drawNsfScreen();
       }
       if (c == 'T' && nes.famiKeyboard()) {     // text for the Famicom keyboard, to the line end
         String line;                            // ('|' is RETURN)
@@ -2895,8 +3055,10 @@ static void runGame()
         serialFrames = 10;
       }
     }
-    updatePads(serialFrames ? serialButtons : 0);
+    uint8_t pad = updatePads(serialFrames ? serialButtons : 0);
     famiKeysFrame();
+    if (music)
+      nsfFrame(pad);
     if (serialFrames)
       --serialFrames;
 
@@ -2904,7 +3066,8 @@ static void runGame()
     if (s_overlayFrames)
       --s_overlayFrames;
     Tape::Mode tapeMode = s_tape.mode();
-    nes.runFrame(draw);
+    if (!(music && s_nsfPaused))
+      nes.runFrame(music ? false : draw);   // music: the screen is the player's
     int64_t t1 = esp_timer_get_time();
     if (s_trapOp == TrapOp::NONE) {
       if (uint16_t call = nes.vcCall())

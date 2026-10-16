@@ -264,6 +264,27 @@ No commercial ROMs are included. Two that can be had legally:
   the test's own return address, which derails the whole run on any emulator that fails it.) For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
   lists Nintendo's NSO emulator at 97 of 140 on an older version of the suite.
 
+## NSF music
+
+NSF files (`roms/*.nsf`, listed in `settings.csv` like games) play as music: the screen shows the
+title, artist, copyright, the picture, a level bar per channel (pulse 1 and 2, triangle,
+noise, DMC, and FDS for FDS music: how far each one's output swings, falling back slowly),
+the song number and the play time. Left/Right on the pad
+(arrow keys, a real pad, or `l`/`r` over serial) changes the song, Start pauses, and SysRq opens
+the system menu as in games. Reset starts the song again. Savestates are not made for music.
+
+The player (`src/nes/nsf.*`) calls the NSF's INIT with the song in A and PAL in X, then PLAY at
+the NSF's play rate. Both return to `$4100`, which reads as `JMP $4100`. While the CPU waits
+there, the console skips the time, so music costs 1-4 ms of the 16.6 ms per frame. The NSF stays
+in flash. Its banks are copied into 32 KB of RAM at `$8000`-`$FFFF` (4 KB banks through
+`$5FF8`-`$5FFF`, and `$5FF6`-`$5FF7` for FDS music, which also uses `$6000`-`$7FFF` as RAM).
+
+Sound chips: the 2A03, and the FDS's (`src/nes/fds_audio.*`). The FDS has a 64-step wavetable, the
+pitch modulator, and the volume and modulation envelopes. It is mixed at up to 2.4 times a pulse
+channel and filtered at about 2 kHz like the real one. NSFs that need VRC6, VRC7, MMC5, Namco
+163 or Sunsoft 5B are refused for now. `host/nestool run music.nsf FRAMES out.ppm wav=out.wav
+song=N` renders a song (`nofds` leaves the FDS out, for comparing).
+
 ## Data Recorder
 
 The Famicom Data Recorder was a cassette recorder plugged into the Family BASIC keyboard. The

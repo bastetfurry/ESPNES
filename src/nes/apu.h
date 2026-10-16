@@ -9,6 +9,7 @@
 
 #include "platform.h"
 #include "cart.h"
+#include "fds_audio.h"
 
 class Nes;
 class StateIO;
@@ -49,6 +50,16 @@ public:
 
   // savestates (see state.h); the samples not yet taken are dropped, the sample rate is kept
   void state(StateIO & io);
+
+  // the FDS's sound, mixed in while fdsOn (FDS music; Nes routes $4040-$4097 to it)
+  FdsAudio fds;
+  bool     fdsOn = false;
+
+  // Level meters (while metersOn): how far each channel's output swung since the last call, per
+  // sample: pulse 1, pulse 2, triangle, noise (0-15), DMC (0-127), FDS (0-63)
+  enum { METER_PULSE1, METER_PULSE2, METER_TRIANGLE, METER_NOISE, METER_DMC, METER_FDS, METERS };
+  bool     metersOn = false;
+  void     takeMeters(uint8_t out[METERS]);
 
 private:
 
@@ -155,6 +166,14 @@ private:
 
   // output stage
   int32_t  m_hpPrevIn, m_hpPrevOut;
+  int32_t  m_fdsLowpass;         // the FDS's output filter, about 2 kHz
+  int32_t  m_fdsLowpassK;        // its coefficient at the sample rate, of 1024
+  uint8_t  m_meterMin[METERS], m_meterMax[METERS];
+  void     meter(int i, int32_t level)
+  {
+    if (level < m_meterMin[i]) m_meterMin[i] = level;
+    if (level > m_meterMax[i]) m_meterMax[i] = level;
+  }
 
   int16_t  m_samples[MAX_SAMPLES];
   int      m_sampleCount;

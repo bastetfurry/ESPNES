@@ -14,6 +14,7 @@
 #include "state.h"
 #include "tape.h"
 #include "famikey.h"
+#include "nsf.h"
 
 #ifdef NES_TRACE
 class Nes;
@@ -35,12 +36,20 @@ public:
   Nes();
   ~Nes();
 
-  // Takes a ROM image, which must stay valid until eject(). Returns nullptr or an error message.
+  // Takes a ROM image or an NSF (see nsf.h), which must stay valid until eject(). Returns nullptr
+  // or an error message.
   char const * insert(uint8_t const * image, size_t size);
   void         eject();
   bool         inserted() const               { return m_mapper != nullptr; }
 
   void   powerOn();
+
+  // --- NSF music (see nsf.h) ---
+  bool           isNsf() const                { return m_isNsf; }
+  NsfInfo const & nsf() const                 { return m_nsfInfo; }
+  // Starts song 1-songs: power on, INIT; runFrame() calls PLAY at the play rate.
+  void           nsfStart(int song);
+  int            nsfSong() const              { return m_nsfSong; }
   void   setRegion(Region region);
   Region region() const                       { return m_region; }
   int    frameRate() const                    { return m_region == Region::PAL ? 50 : 60; }
@@ -229,6 +238,12 @@ private:
   uint8_t    m_shift[2];
   bool       m_strobe;
   bool       m_mic = false;
+  bool       m_isNsf = false;
+  NsfInfo    m_nsfInfo;
+  int        m_nsfSong = 0;
+  int64_t    m_nsfTime = 0;      // NSF: microseconds of play time not yet given to PLAY
+  bool       m_fdsAudio = false; // $4040-$4097 are the FDS sound's
+  void       nsfCall(uint16_t addr);
   uint16_t   m_micNoise = 1;     // LFSR
   uint8_t    m_expOut = 0;       // the last $4016 write's bits 0-2 (the expansion port's outputs)
   bool       m_famiKeyboard = false;

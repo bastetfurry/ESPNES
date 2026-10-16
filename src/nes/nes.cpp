@@ -38,6 +38,31 @@ Nes::~Nes()
 char const * Nes::insert(uint8_t const * image, size_t size)
 {
   eject();
+  if (::isNsf(image, size)) {
+    // music: no CHR, the NSF mapper's RAM at $8000-$FFFF
+    if (char const * err = parseNsf(image, size, &m_nsfInfo))
+      return err;
+    memset(&m_cart, 0, sizeof(m_cart));
+    m_cart.info.mapper = -1;
+    m_cart.info.mirroring = Mirroring::Vertical;
+    m_cart.info.regionKnown = true;
+    m_cart.info.region = m_nsfInfo.pal && !m_nsfInfo.dual ? Region::PAL : Region::NTSC;
+    m_cart.prg = m_nsfInfo.data;
+    m_cart.info.prgSize = m_nsfInfo.dataSize;
+    prgRam = (uint8_t *) malloc(0x2000);
+    m_chrRam = (uint8_t *) malloc(0x2000);
+    m_mapper = prgRam && m_chrRam ? createNsfMapper(*this, m_nsfInfo) : nullptr;
+    if (!m_mapper) {
+      eject();
+      return "Out of memory";
+    }
+    m_isNsf = true;
+    m_fdsAudio = m_nsfInfo.chips & NSF_FDS;
+    ppu.chrWritable = true;
+    memset(prgRam, 0, 0x2000);
+    setRegion(m_cart.info.region);
+    return nullptr;
+  }
   char const * err = parseRom(image, size, &m_cart);
   if (err)
     return err;
@@ -72,6 +97,8 @@ void Nes::eject()
   m_cheatsOn = m_romPatched = false;
   m_vcCallOn = false;
   m_vcCall = 0;
+  m_isNsf = false;
+  m_fdsAudio = false;
   m_portOn = false;
   m_portCall = 0;
   delete m_mapper;
@@ -383,6 +410,12 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
         return bus = m_portCall ? 0x80 : m_portResult;
       return bus;
     default:
+      if (NES_UNLIKELY(m_fdsAudio) && addr >= 0x4040 && addr < 0x4098) {
+        apu.run(cpu.cycles);
+        int r = apu.fds.read(addr);
+        if (r >= 0)
+          return bus = r;
+      }
       if (addr >= 0x4020) {
         int r = m_mapper->readLow(addr);
         if (r >= 0)
@@ -422,6 +455,11 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   }
 
   if (addr >= 0x4020) {
+    if (NES_UNLIKELY(m_fdsAudio) && addr >= 0x4040 && addr < 0x4098) {
+      apu.run(cpu.cycles);
+      apu.fds.write(addr, value);
+      return;
+    }
     m_mapper->writeLow(addr, value);
     return;
   }
@@ -494,6 +532,12 @@ void Nes::drawQueuedLines()
 // It costs nothing while the DMC is idle.
 NES_HOT void Nes::runCpu(int32_t until)
 {
+  // NSF: waiting for the next PLAY in the idle loop changes nothing, so the time is skipped
+  if (NES_UNLIKELY(m_isNsf) && cpu.PC == NSF_IDLE) {
+    if (cpu.cycles < until)
+      cpu.cycles = until;
+    return;
+  }
   for (;;) {
     int32_t dma = apu.nextDmaCycle();
     if (NES_LIKELY(dma >= until)) {
@@ -535,8 +579,57 @@ void Nes::dmaInRead(uint16_t addr)
 }
 
 
+// NSF: a call of INIT or PLAY, returning to the idle loop
+void Nes::nsfCall(uint16_t addr)
+{
+  uint16_t back = NSF_IDLE - 1;                // RTS adds 1
+  ram[0x100 | cpu.S--] = back >> 8;
+  ram[0x100 | cpu.S--] = back & 0xff;
+  cpu.PC = addr;
+}
+
+
+void Nes::nsfStart(int song)
+{
+  if (!m_isNsf)
+    return;
+  m_nsfSong = song < 1 ? 1 : song > m_nsfInfo.songs ? m_nsfInfo.songs : song;
+  memset(prgRam, 0, 0x2000);
+  powerOn();                                   // RAM cleared, the mapper loads the banks
+  apu.fdsOn = m_fdsAudio;
+  // the APU as an NSF expects it
+  for (uint16_t a = 0x4000; a < 0x4014; ++a)
+    write(a, 0);
+  write(0x4015, 0x0f);
+  write(0x4017, 0x40);
+  if (m_fdsAudio) {
+    write(0x4089, 0x80);                       // the BIOS's setup: wave writable, envelopes
+    write(0x408a, 0xe8);
+  }
+  cpu.A = m_nsfSong - 1;
+  cpu.X = region() == Region::PAL ? 1 : 0;
+  cpu.Y = 0;
+  cpu.S = 0xfd;
+  cpu.setP(0x04);
+  nsfCall(m_nsfInfo.init);
+  m_nsfTime = 0;
+}
+
+
 NES_HOT void Nes::runFrame(bool draw)
 {
+  if (NES_UNLIKELY(m_isNsf)) {
+    // PLAY at its rate, once INIT (or the last PLAY) has returned to the idle loop
+    m_nsfTime += m_region == Region::PAL ? 19997 : 16639;
+    uint32_t period = m_region == Region::PAL ? m_nsfInfo.periodPal : m_nsfInfo.periodNtsc;
+    if (cpu.PC >= NSF_IDLE && cpu.PC < NSF_IDLE + 3 && m_nsfTime >= period) {
+      m_nsfTime -= period;
+      if (m_nsfTime > period)
+        m_nsfTime = period;                    // behind: no catching up
+      nsfCall(m_nsfInfo.play);
+    }
+  }
+
   if (NES_UNLIKELY(m_cheatsOn))
     for (int i = 0; i < m_cheatCount; ++i)
       if (!m_cheats[i].rom)

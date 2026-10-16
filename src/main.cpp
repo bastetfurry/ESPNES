@@ -2791,17 +2791,44 @@ static void nsfFrame(uint8_t buttons)
 
 enum class SysAction { RETURN, PLAY, RECORD, STOP, KEYBOARD, LAYOUT, CHEATS, VOLUME, RESET, ROMLIST };
 
+static constexpr int SYS_X = 24, SYS_W = 208, SYS_Y = 48;
+
+// one row of the menu, as selected or not
+static void drawSystemRow(SysAction a, int i, bool selected)
+{
+  char line[32];
+  switch (a) {
+    case SysAction::RETURN:   snprintf(line, sizeof(line), "Return to game"); break;
+    case SysAction::PLAY:     snprintf(line, sizeof(line), "Tape: play"); break;
+    case SysAction::RECORD:   snprintf(line, sizeof(line), "Tape: record"); break;
+    case SysAction::STOP:     snprintf(line, sizeof(line), "Tape: stop"); break;
+    case SysAction::KEYBOARD: snprintf(line, sizeof(line), "Keyboard     [%s]", s_famiMode ? "Famicom" : "pads"); break;
+    case SysAction::LAYOUT:   snprintf(line, sizeof(line), "Layout [%s]", currentLayout()->desc); break;
+    case SysAction::CHEATS:   snprintf(line, sizeof(line), "Cheats       [%s]", !nes.cheatCount() ? "none" : nes.cheatsEnabled() ? "on" : "off"); break;
+    case SysAction::VOLUME:   snprintf(line, sizeof(line), "Volume       [%d/8]", s_volume); break;
+    case SysAction::RESET:    snprintf(line, sizeof(line), "Reset"); break;
+    case SysAction::ROMLIST:  snprintf(line, sizeof(line), "Back to the ROM list"); break;
+  }
+  // padded to the row's width: the text's background paints the whole row, nothing is cleared first
+  char padded[32];
+  snprintf(padded, sizeof(padded), "%-24s", line);
+  fabgl::Canvas & cv = *s_canvas;
+  cv.setBrushColor(selected ? Color::BrightBlue : Color::Blue);
+  cv.setPenColor(selected ? Color::BrightWhite : Color::White);
+  cv.drawText(SYS_X + 8, SYS_Y + 34 + i * 8, padded);
+}
+
+
 static void drawSystemMenu(SysAction const * items, int count, int sel)
 {
-  constexpr int X = 24, W = 208, Y = 48;
   int h = 8 * (count + 6);
   fabgl::Canvas & cv = *s_canvas;
   cv.setBrushColor(Color::Blue);
-  cv.fillRectangle(X, Y, X + W - 1, Y + h - 1);
+  cv.fillRectangle(SYS_X, SYS_Y, SYS_X + SYS_W - 1, SYS_Y + h - 1);
   cv.setPenColor(Color::BrightWhite);
-  cv.drawRectangle(X + 2, Y + 2, X + W - 3, Y + h - 3);
+  cv.drawRectangle(SYS_X + 2, SYS_Y + 2, SYS_X + SYS_W - 3, SYS_Y + h - 3);
   cv.setPenColor(Color::BrightYellow);
-  cv.drawText(X + (W - 18 * 8) / 2, Y + 6, "ESPNES System Menu");
+  cv.drawText(SYS_X + (SYS_W - 18 * 8) / 2, SYS_Y + 6, "ESPNES System Menu");
   // the tape, under the title
   char line[32];
   if (s_tape.empty())
@@ -2810,29 +2837,12 @@ static void drawSystemMenu(SysAction const * items, int count, int sel)
     snprintf(line, sizeof(line), "Tape: %u B, %s", (unsigned) s_tape.size(),
              s_tape.mode() == Tape::PLAYING ? "playing" : s_tape.mode() == Tape::RECORDING ? "recording" : "stopped");
   cv.setPenColor(Color::BrightCyan);
-  cv.drawText(X + 12, Y + 20, line);
-  for (int i = 0; i < count; ++i) {
-    int y = Y + 34 + i * 8;
-    cv.setBrushColor(i == sel ? Color::BrightBlue : Color::Blue);
-    cv.fillRectangle(X + 8, y, X + W - 9, y + 7);
-    cv.setPenColor(i == sel ? Color::BrightWhite : Color::White);
-    switch (items[i]) {
-      case SysAction::RETURN:   snprintf(line, sizeof(line), "Return to game"); break;
-      case SysAction::PLAY:     snprintf(line, sizeof(line), "Tape: play"); break;
-      case SysAction::RECORD:   snprintf(line, sizeof(line), "Tape: record"); break;
-      case SysAction::STOP:     snprintf(line, sizeof(line), "Tape: stop"); break;
-      case SysAction::KEYBOARD: snprintf(line, sizeof(line), "Keyboard     [%s]", s_famiMode ? "Famicom" : "pads"); break;
-      case SysAction::LAYOUT:   snprintf(line, sizeof(line), "Layout [%s]", currentLayout()->desc); break;
-      case SysAction::CHEATS:   snprintf(line, sizeof(line), "Cheats       [%s]", !nes.cheatCount() ? "none" : nes.cheatsEnabled() ? "on" : "off"); break;
-      case SysAction::VOLUME:   snprintf(line, sizeof(line), "Volume       [%d/8]", s_volume); break;
-      case SysAction::RESET:    snprintf(line, sizeof(line), "Reset"); break;
-      case SysAction::ROMLIST:  snprintf(line, sizeof(line), "Back to the ROM list"); break;
-    }
-    cv.drawText(X + 12, y, line);
-  }
+  cv.drawText(SYS_X + 12, SYS_Y + 20, line);
+  for (int i = 0; i < count; ++i)
+    drawSystemRow(items[i], i, i == sel);
   cv.setBrushColor(Color::Blue);
   cv.setPenColor(Color::BrightBlack);
-  cv.drawText(X + 12, Y + h - 14, "\x18\x19 Enter  \x1b\x1a change  Esc");
+  cv.drawText(SYS_X + 12, SYS_Y + h - 14, "\x18\x19 Enter  \x1b\x1a change  Esc");
   cv.waitCompletion();
 }
 
@@ -2857,8 +2867,8 @@ static bool systemMenu()
     ~KeepLayout() { if (s_layout != before) storeLayout(); }
   } keep { layout };
   auto kb = PS2.keyboard();
-  for (;;) {
-    drawSystemMenu(items, count, sel);
+  drawSystemMenu(items, count, sel);
+  for (int shown = sel;; shown = sel) {
     // a key: from the keyboard, or n p o < > ~ over serial
     int key = 0;
     while (!key) {
@@ -2883,6 +2893,19 @@ static bool systemMenu()
       }
     }
     SysAction a = items[sel];
+    // after the key: the rows that changed, only them
+    struct Redraw {
+      SysAction const * items;
+      int const &       sel;
+      int               shown;
+      ~Redraw()
+      {
+        if (sel != shown)
+          drawSystemRow(items[shown], shown, false);
+        drawSystemRow(items[sel], sel, true);
+        s_canvas->waitCompletion();
+      }
+    } redraw { items, sel, shown };
     if (key == 'p')
       sel = (sel + count - 1) % count;
     else if (key == 'n')

@@ -914,6 +914,92 @@ static uint8_t s_padState[2];        // the buttons whose keys are down, from th
 static bool    s_micState;
 
 
+// Keyboard layouts: FabGL's (US, UK, German, Italian, Spanish, French, Belgian, Norwegian,
+// Japanese), chosen in the system menu and kept in SPIFFS (/layout.cfg, its short name). Text,
+// menu keys and key names follow the layout. The pads' keys are kept by their place on the
+// keyboard: the key the US layout has there (a "position"), so they stay when the layout changes.
+static constexpr char const * LAYOUT_PATH = "/layout.cfg";
+static int s_layout = -1;            // in fabgl::SupportedLayouts, -1 until loaded
+
+static fabgl::KeyboardLayout const * currentLayout()
+{
+  return PS2.keyboard()->getLayout();
+}
+
+// a layout's key for a scancode (set 2, without E0/F0), following the layouts it builds on
+static fabgl::VirtualKey layoutVK(fabgl::KeyboardLayout const * layout, uint8_t code, bool extended)
+{
+  for (; layout; layout = layout->inherited) {
+    auto const * def = extended ? layout->exScancodeToVK : layout->scancodeToVK;
+    for (; def->scancode; ++def)
+      if (def->scancode == code)
+        return def->virtualKey;
+  }
+  return fabgl::VK_NONE;
+}
+
+// the place of a key event on the keyboard: the US layout's key there
+static fabgl::VirtualKey positionKey(fabgl::VirtualKeyItem const & item)
+{
+  uint8_t const * code = item.scancode;
+  if (code[0] == 0xe1)
+    return fabgl::VK_PAUSE;
+  bool extended = code[0] == 0xe0;
+  if (extended)
+    ++code;
+  if (*code == 0xf0)
+    ++code;
+  fabgl::VirtualKey vk = layoutVK(&fabgl::USLayout, *code, extended);
+  return vk != fabgl::VK_NONE ? vk : item.vk;
+}
+
+// the current layout's key at a position (for its name)
+static fabgl::VirtualKey layoutKey(fabgl::VirtualKey position)
+{
+  for (int extended = 0; extended < 2; ++extended) {
+    auto const * def = extended ? fabgl::USLayout.exScancodeToVK : fabgl::USLayout.scancodeToVK;
+    for (; def->scancode; ++def)
+      if (def->virtualKey == position) {
+        fabgl::VirtualKey vk = layoutVK(currentLayout(), def->scancode, extended);
+        return vk != fabgl::VK_NONE ? vk : position;
+      }
+  }
+  return position;
+}
+
+static void setLayout(int index)
+{
+  int n = fabgl::SupportedLayouts::count();
+  s_layout = (index % n + n) % n;
+  PS2.keyboard()->setLayout(fabgl::SupportedLayouts::layouts()[s_layout]);
+}
+
+static void loadLayout()
+{
+  int index = -1;
+  if (File f = SPIFFS.open(LAYOUT_PATH, "r")) {
+    String name = f.readStringUntil('\n');
+    name.trim();
+    for (int i = 0; i < fabgl::SupportedLayouts::count(); ++i)
+      if (name == fabgl::SupportedLayouts::shortNames()[i])
+        index = i;
+  }
+  for (int i = 0; index < 0 && i < fabgl::SupportedLayouts::count(); ++i)
+    if (!strcmp(fabgl::SupportedLayouts::shortNames()[i], "US"))
+      index = i;
+  setLayout(index);
+  Serial.printf("Keyboard layout: %s\n", currentLayout()->desc);
+}
+
+static void storeLayout()
+{
+  File f = SPIFFS.open(LAYOUT_PATH, "w");
+  if (f)
+    f.print(String(currentLayout()->name) + "\n");
+  Serial.printf("Keyboard layout: %s%s\n", currentLayout()->desc, f ? "" : " (not saved)");
+}
+
+
 // One name for the keys that are one key on the keyboard: FabGL gives a letter as a different
 // virtual key with Shift held, the numpad depends on Num Lock, and there are left and right
 // modifiers. So Shift as Select and a letter as A work together, and a key released after Shift
@@ -960,28 +1046,47 @@ static void padKeyEvent(fabgl::VirtualKey vk, bool down)
 // Family BASIC keyboard (see nes/famikey.h)
 //
 // For games that want it (keyboard = yes, or "BASIC" in the file name), the PC keyboard is the
-// Famicom's, key by key at the same place (FabGL's US layout: on a German keyboard Z and Y are
-// swapped). Only SysRq (the system menu) and Scroll Lock (the keyboard as the pads and back)
-// stay the emulator's.
+// Famicom's. Letters, digits and symbols type what the layout prints on them (Shift is made what
+// the Famicom needs for that character: Shift+, on a German keyboard is ";", which the Famicom has
+// unshifted); a character the Famicom does not have (an umlaut) is the Famicom key at that place.
+// The other keys go by place. Only SysRq (the system menu) and Scroll Lock (the keyboard as the
+// pads and back) stay the emulator's.
 //   Famicom      PC
-//   ESC          Esc, Tab           CTR    Ctrl         GRPH   Alt          KANA   AltGr (Right Alt)
+//   ESC          Esc, Tab           CTR    Ctrl         GRPH   Alt (left)   KANA   Caps Lock
 //   STOP         Pause/Break        DEL    Backspace, Delete                INS    Insert
-//   CLR HOME     Home               @ [    [ ]          ] YEN  \\ `         ^      =
-//   :            '                  _      Menu (the key with the list)
+//   CLR HOME     Home               YEN    the key left of 1 (by place)     _      Menu key
+// AltGr is left to the layout (@ \\ [ ] on QWERTZ and AZERTY).
 
 static bool    s_famiMode;          // the keyboard is the Famicom's (else it drives the pads)
 static int     s_famiStopFrames;    // Pause sends no release: STOP is held for a few frames
 static String  s_famiTyping;        // text typed over serial ('T'), a key every 8 frames
 static int     s_famiTypingFrame;
 
-static FamiKey famiKeyOf(fabgl::VirtualKey vk)
+// the keys held, by position: which Famicom key each pressed, and the Shift it wants
+// (-1: the real Shift, 0: none, 1: Shift). Family BASIC loses a key that goes down in the same
+// frame as Shift changes (and the ones after it), so a key that changes Shift waits 2 frames;
+// released before that, it is still typed, held for 3 frames.
+struct FamiHeld {
+  fabgl::VirtualKey position;
+  FamiKey key;
+  int8_t  shift;
+  int8_t  wait;                     // frames until it goes down
+  bool    released;                 // let go while waiting
+  int8_t  hold;                     // then: frames until it goes up
+};
+static FamiHeld s_famiHeld[12];
+static int      s_famiHeldCount;
+static bool     s_famiShift;        // the Famicom's Shift as set last
+
+// the Famicom key at a position (the US layout's key there), for keys that go by place
+static FamiKey famiKeyAt(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
   // before canonKey, which makes the right modifiers the left ones
   if (vk == VK_RSHIFT)
     return FK_RSHIFT;
   if (vk == VK_RALT)
-    return FK_KANA;
+    return FK_NONE;                 // AltGr: the layout's
   vk = canonKey(vk);
   bool shift;
   if (vk >= VK_a && vk <= VK_z)
@@ -997,6 +1102,7 @@ static FamiKey famiKeyOf(fabgl::VirtualKey vk)
     case VK_LCTRL:                       return FK_CTR;
     case VK_LALT:                        return FK_GRPH;
     case VK_LSHIFT:                      return FK_LSHIFT;
+    case VK_CAPSLOCK:                    return FK_KANA;
     case VK_RETURN: case VK_KP_ENTER:    return FK_RETURN;
     case VK_SPACE:                       return FK_SPACE;
     case VK_BACKSPACE: case VK_DELETE:   return FK_DEL;
@@ -1023,21 +1129,123 @@ static FamiKey famiKeyOf(fabgl::VirtualKey vk)
 }
 
 
-static void famiKeyEvent(fabgl::VirtualKey vk, bool down)
+// the Famicom's Shift: what the newest held character wants, else the real Shift keys; true if
+// it changed
+static bool famiUpdateShift()
 {
-  if (vk == fabgl::VK_PAUSE || vk == fabgl::VK_BREAK) {
-    if (down)
+  int want = -1;
+  bool left = false, right = false;
+  for (int i = 0; i < s_famiHeldCount; ++i) {
+    FamiHeld const & h = s_famiHeld[i];
+    if (h.shift >= 0)
+      want = h.shift;
+    left |= h.key == FK_LSHIFT;
+    right |= h.key == FK_RSHIFT;
+  }
+  if (want >= 0) {
+    left = want == 1;
+    right = false;
+  }
+  nes.setFamiKey(FK_LSHIFT, left);
+  nes.setFamiKey(FK_RSHIFT, right);
+  bool changed = (left || right) != s_famiShift;
+  s_famiShift = left || right;
+  return changed;
+}
+
+
+// a held key goes away: up on the Famicom, unless another held key is the same
+static void famiRemove(int i)
+{
+  FamiKey key = s_famiHeld[i].key;
+  s_famiHeld[i] = s_famiHeld[--s_famiHeldCount];
+  bool still = false;
+  for (int k = 0; k < s_famiHeldCount; ++k)
+    still |= s_famiHeld[k].key == key && !s_famiHeld[k].wait;
+  if (!still && key != FK_LSHIFT && key != FK_RSHIFT)
+    nes.setFamiKey(key, false);
+  famiUpdateShift();
+}
+
+
+static void famiKeyEvent(fabgl::VirtualKeyItem const & item)
+{
+  using namespace fabgl;
+  VirtualKey position = positionKey(item);
+  if (position == VK_PAUSE || position == VK_BREAK) {
+    if (item.down)
       s_famiStopFrames = 6;
     return;
   }
-  nes.setFamiKey(famiKeyOf(vk), down);
+  int i = 0;
+  while (i < s_famiHeldCount && s_famiHeld[i].position != position)
+    ++i;
+  if (!item.down) {
+    if (i == s_famiHeldCount)
+      return;
+    if (s_famiHeld[i].wait)
+      s_famiHeld[i].released = true;  // typed when its wait is over
+    else
+      famiRemove(i);
+    return;
+  }
+  if (i < s_famiHeldCount || s_famiHeldCount == (int)(sizeof(s_famiHeld) / sizeof(s_famiHeld[0])))
+    return;                          // held already (the keyboard repeats), or too many keys
+
+  // what the key types: a letter, a character of the layout, or else its place
+  FamiKey key = FK_NONE;
+  int8_t shift = -1;
+  VirtualKey vk = item.vk;
+  bool shifted;
+  if ((vk >= VK_a && vk <= VK_z) || (vk >= VK_A && vk <= VK_Z)) {
+    key = famiKeyOfChar(vk >= VK_a && vk <= VK_z ? 'a' + (vk - VK_a) : 'a' + (vk - VK_A), &shifted);
+  } else if (item.ASCII > ' ' && item.ASCII < 0x7f && !item.CTRL && !item.LALT) {
+    key = famiKeyOfChar(item.ASCII, &shifted);
+    if (key != FK_NONE)
+      shift = shifted;
+  }
+  if (key == FK_NONE)
+    key = famiKeyAt(position);
+  if (key == FK_NONE)
+    return;
+  FamiHeld & h = s_famiHeld[s_famiHeldCount++];
+  h = { position, key, shift, 0, false, 0 };
+  bool isShift = key == FK_LSHIFT || key == FK_RSHIFT;
+  if (famiUpdateShift() && !isShift)
+    h.wait = 2;
+  else if (!isShift)
+    nes.setFamiKey(key, true);
+}
+
+
+// every frame: keys waiting for Shift go down, typed ones that were let go meanwhile go up
+static void famiHeldFrame()
+{
+  for (int i = 0; i < s_famiHeldCount; ++i) {
+    FamiHeld & h = s_famiHeld[i];
+    if (h.wait && !--h.wait) {
+      nes.setFamiKey(h.key, true);
+      if (h.released)
+        h.hold = 3;
+    } else if (h.hold && !--h.hold) {
+      famiRemove(i--);
+    }
+  }
+}
+
+
+static void releaseFamiKeys()
+{
+  s_famiHeldCount = 0;
+  s_famiShift = false;
+  nes.releaseFamiKeys();
 }
 
 
 static void setFamiMode(bool on)
 {
   s_famiMode = on;
-  nes.releaseFamiKeys();
+  releaseFamiKeys();
   s_padState[0] = s_padState[1] = 0;
   showOverlay(on ? "FAMICOM KEYBOARD" : "KEYBOARD AS PADS");
   Serial.println(on ? "Keyboard: Famicom" : "Keyboard: pads");
@@ -1047,6 +1255,7 @@ static void setFamiMode(bool on)
 // every frame: the STOP key's hold, and the next key of text typed over serial
 static void famiKeysFrame()
 {
+  famiHeldFrame();
   if (s_famiStopFrames)
     nes.setFamiKey(FK_STOP, --s_famiStopFrames > 0);
   if (s_famiTyping.isEmpty())
@@ -1113,10 +1322,12 @@ static void storePadKeys()
 }
 
 
-// a short name for a key, at most 11 characters (arrows are the font's code page 437 arrows)
+// a short name for a key (a position), at most 11 characters, as the layout labels it (arrows
+// are the font's code page 437 arrows)
 static String keyName(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
+  vk = layoutKey(vk);
   switch (vk) {
     case VK_NONE:      return "-";
     case VK_UP:        return "\x18";
@@ -1288,10 +1499,9 @@ static char const * editPadKeys()
       else if (c == ' ')
         vk = fabgl::VK_SPACE;
     } else if (kb->virtualKeyAvailable()) {
-      bool down;
-      vk = kb->getNextVirtualKey(&down, 0);
-      if (!down)
-        vk = fabgl::VK_NONE;
+      // by place, so the keys stay when the layout changes
+      fabgl::VirtualKeyItem item;
+      vk = kb->getNextVirtualKey(&item, 0) && item.down ? positionKey(item) : fabgl::VK_NONE;
     }
     if (vk == fabgl::VK_NONE)
       vTaskDelay(pdMS_TO_TICKS(20));
@@ -1456,6 +1666,7 @@ static std::vector<SpiffsFile> listSpiffs()
 static char const * fileKind(String const & path)
 {
   if (path == KEYS_PATH)          return "Keys";
+  if (path == LAYOUT_PATH)        return "Layout";
   if (path.endsWith(".sav"))      return "Save";
   if (path.endsWith(".cht"))      return "Codes";
   if (path.endsWith(".st1"))      return "State 1";
@@ -1530,10 +1741,9 @@ static char const * fileManager()
         default:  vk = fabgl::VK_n; break;   // anything else answers no
       }
     } else if (kb->virtualKeyAvailable()) {
-      bool down;
-      vk = kb->getNextVirtualKey(&down, 0);
-      if (!down)
-        vk = fabgl::VK_NONE;
+      // by place, so the keys stay when the layout changes
+      fabgl::VirtualKeyItem item;
+      vk = kb->getNextVirtualKey(&item, 0) && item.down ? positionKey(item) : fabgl::VK_NONE;
     }
     if (vk == fabgl::VK_NONE)
       vTaskDelay(pdMS_TO_TICKS(20));
@@ -2315,7 +2525,7 @@ static int trapKeyOf(fabgl::VirtualKey vk)
 // System menu: SysRq (Alt+PrintScreen) in every game, as in ESPPC. The game stands still while it
 // is open; the box is drawn over its picture, which the next frame paints again.
 
-enum class SysAction { RETURN, PLAY, RECORD, STOP, KEYBOARD, CHEATS, VOLUME, RESET, ROMLIST };
+enum class SysAction { RETURN, PLAY, RECORD, STOP, KEYBOARD, LAYOUT, CHEATS, VOLUME, RESET, ROMLIST };
 
 static void drawSystemMenu(SysAction const * items, int count, int sel)
 {
@@ -2348,6 +2558,7 @@ static void drawSystemMenu(SysAction const * items, int count, int sel)
       case SysAction::RECORD:   snprintf(line, sizeof(line), "Tape: record"); break;
       case SysAction::STOP:     snprintf(line, sizeof(line), "Tape: stop"); break;
       case SysAction::KEYBOARD: snprintf(line, sizeof(line), "Keyboard     [%s]", s_famiMode ? "Famicom" : "pads"); break;
+      case SysAction::LAYOUT:   snprintf(line, sizeof(line), "Layout [%s]", currentLayout()->desc); break;
       case SysAction::CHEATS:   snprintf(line, sizeof(line), "Cheats       [%s]", !nes.cheatCount() ? "none" : nes.cheatsEnabled() ? "on" : "off"); break;
       case SysAction::VOLUME:   snprintf(line, sizeof(line), "Volume       [%d/8]", s_volume); break;
       case SysAction::RESET:    snprintf(line, sizeof(line), "Reset"); break;
@@ -2357,7 +2568,7 @@ static void drawSystemMenu(SysAction const * items, int count, int sel)
   }
   cv.setBrushColor(Color::Blue);
   cv.setPenColor(Color::BrightBlack);
-  cv.drawText(X + 12, Y + h - 14, "\x18\x19 Enter  \x1b\x1a Volume  Esc");
+  cv.drawText(X + 12, Y + h - 14, "\x18\x19 Enter  \x1b\x1a change  Esc");
   cv.waitCompletion();
 }
 
@@ -2365,16 +2576,22 @@ static void drawSystemMenu(SysAction const * items, int count, int sel)
 // Returns true to go back to the ROM list.
 static bool systemMenu()
 {
-  SysAction items[9];
+  SysAction items[10];
   int count = 0;
+  int layout = s_layout;
   for (SysAction a : { SysAction::RETURN, SysAction::PLAY, SysAction::RECORD, SysAction::STOP, SysAction::KEYBOARD,
-                       SysAction::CHEATS, SysAction::VOLUME, SysAction::RESET, SysAction::ROMLIST })
+                       SysAction::LAYOUT, SysAction::CHEATS, SysAction::VOLUME, SysAction::RESET, SysAction::ROMLIST })
     if (a != SysAction::KEYBOARD || nes.famiKeyboard())
       items[count++] = a;
   int sel = 0;
-  nes.releaseFamiKeys();
+  releaseFamiKeys();
   s_padState[0] = s_padState[1] = 0;
-  Serial.println("System menu: n/p select, o does it, < > volume, ~ leaves");
+  Serial.println("System menu: n/p select, o does it, < > change, ~ leaves");
+  // a changed layout is kept when the menu closes
+  struct KeepLayout {
+    int before;
+    ~KeepLayout() { if (s_layout != before) storeLayout(); }
+  } keep { layout };
   auto kb = PS2.keyboard();
   for (;;) {
     drawSystemMenu(items, count, sel);
@@ -2411,6 +2628,9 @@ static bool systemMenu()
     else if ((key == '<' || key == '>') && a == SysAction::VOLUME) {
       s_volume = std::max(0, std::min(8, s_volume + (key == '>' ? 1 : -1)));
       Serial.printf("Volume %d/8\n", s_volume);
+    } else if ((key == '<' || key == '>' || key == 'o') && a == SysAction::LAYOUT) {
+      setLayout(s_layout + (key == '<' ? -1 : 1));
+      Serial.printf("Layout: %s\n", currentLayout()->desc);
     } else if (key == 'o') {
       switch (a) {
         case SysAction::RETURN:   return false;
@@ -2420,6 +2640,7 @@ static bool systemMenu()
         case SysAction::KEYBOARD: setFamiMode(!s_famiMode); break;
         case SysAction::CHEATS:   toggleCheats(); break;
         case SysAction::VOLUME:   break;
+        case SysAction::LAYOUT:   break;
         case SysAction::RESET:    nes.powerOn(); Serial.println("Reset"); return false;
         case SysAction::ROMLIST:  return true;
       }
@@ -2435,7 +2656,7 @@ static void runGame()
   kb->emptyVirtualKeyQueue();
   s_padState[0] = s_padState[1] = 0;
   s_micState = false;
-  nes.releaseFamiKeys();
+  releaseFamiKeys();
   s_famiTyping = String();
   s_famiMode = false;
   if (nes.famiKeyboard())
@@ -2466,8 +2687,11 @@ static void runGame()
   for (;;) {
     // keys other than the pad
     while (kb->virtualKeyAvailable()) {
-      bool down;
-      auto vk = kb->getNextVirtualKey(&down, 0);
+      fabgl::VirtualKeyItem item;
+      if (!kb->getNextVirtualKey(&item, 0))
+        break;
+      auto vk = item.vk;
+      bool down = item.down;
       if (s_trapOp != TrapOp::NONE) {           // the trap's question takes the keys
         if (int c = down ? trapKeyOf(vk) : 0)
           trapKey(c);
@@ -2486,10 +2710,10 @@ static void runGame()
         continue;
       }
       if (s_famiMode) {                         // every other key is the Famicom's
-        famiKeyEvent(vk, down);
+        famiKeyEvent(item);
         continue;
       }
-      padKeyEvent(vk, down);
+      padKeyEvent(positionKey(item), down);
       if (!down)
         continue;
       if (vk == fabgl::VK_F1)
@@ -2661,6 +2885,7 @@ void setup()
   // for save games later; an unformatted partition is formatted on the first boot
   if (!SPIFFS.begin(true))
     Serial.println("SPIFFS could not be mounted");
+  loadLayout();
   loadPadKeys();
   initPads();
   nes.setTape(&s_tape);

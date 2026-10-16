@@ -81,26 +81,35 @@ like someone talking into it (Famicom games use it, e.g. the Japanese Zelda's Po
 
 Alt+PrtScr (SysRq) opens the system menu over the paused game, the same key as in ESPPC. It has
 the tape (play, record, stop, and what is on it), the keyboard (Famicom or pads, for keyboard
-games), cheats on/off, the volume (Left/Right), reset and back to the ROM list. Esc or SysRq
-returns to the game.
+games), the keyboard layout, cheats on/off, the volume, reset and back to the ROM list.
+Left/Right changes the layout and the volume. Esc or SysRq returns to the game.
+
+### Keyboard layout
+
+The layout is one of FabGL's: US (the default), UK, German, Italian, Spanish, French, Belgian,
+Norwegian or Japanese. It is chosen in the system menu and kept in SPIFFS (`/layout.cfg`). Text
+(cheat codes), menu keys and the key mapper's names follow it. The pads' keys are stored by their
+place on the keyboard, so a layout change does not move them.
 
 ### Family BASIC keyboard
 
 Games with "BASIC" in the file name, or `keyboard=yes` in their options, get the Family BASIC
 keyboard: the PC keyboard becomes the Famicom's (`$4016` writes select the row and column,
-`$4017` bits 1-4 read the keys, see `src/nes/famikey.h`). Keys sit where they are on the
-Famicom, judged by FabGL's US layout, so Z and Y are swapped on a German keyboard. Only SysRq and
-Scroll Lock stay the emulator's; Scroll Lock switches the keyboard to the pads and back.
+`$4017` bits 1-4 read the keys, see `src/nes/famikey.h`). Letters, digits and symbols type what
+the layout prints on them. The emulator presses or hides the Famicom's Shift as the character
+needs, so `;` (Shift+, on QWERTZ) arrives as the Famicom's unshifted `;`. A character the Famicom
+lacks (an umlaut) is the Famicom key at that place. AltGr stays the layout's. Only SysRq and
+Scroll Lock stay the emulator's; Scroll Lock switches the keyboard to the pads and back. The
+other keys:
 
 | Famicom | PC | Famicom | PC |
 |---|---|---|---|
 | ESC | Esc, Tab | STOP | Pause/Break |
-| CTR | Ctrl | GRPH | Alt |
-| KANA | AltGr | CLR HOME | Home |
+| CTR | Ctrl | GRPH | Alt (left) |
+| KANA | Caps Lock | CLR HOME | Home |
 | INS | Insert | DEL | Backspace, Delete |
-| @ [ ] | [ ] \\ | ¥ | \` |
-| ^ | = | : | ' |
-| _ | Menu key | F1-F8 | F1-F8 |
+| ¥ | the key left of 1 | _ | Menu key |
+| F1-F8 | F1-F8 | arrows | arrows |
 
 Use Family BASIC V3.0, which has 4 KB for programs (4086 bytes free). V2.x has 2 KB. SAVE and LOAD
 go to the Data Recorder: press record (or play) in the system menu, then type SAVE "NAME" (or

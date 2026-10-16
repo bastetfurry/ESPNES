@@ -22,7 +22,8 @@
 //                                         tapeplay=FILE@F plays the tape FILE from frame F;
 //                                         type=F:TEXT plugs in the Family BASIC keyboard and types
 //                                         TEXT from frame F (\n is RETURN; 4 frames per key down,
-//                                         4 up; can be repeated)
+//                                         4 up; can be repeated); famikey=CODE@FROM-TO holds
+//                                         one key (famikey.h's number) in those frames
 //                                         trap=SPEC (from tools/tapetrap.py) traps the game's
 //                                         tape save/load: the data goes to/comes from trapfile=FILE
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
@@ -206,6 +207,8 @@ static int run(int argc, char ** argv)
   std::vector<std::pair<int, int>> trapBlocks;
   char const * trapPath = nullptr;
   std::vector<std::pair<int, std::string>> typing;    // from frame, text
+  struct KeyHold { int key, from, to; };
+  std::vector<KeyHold> keyHolds;                      // famikey=CODE@FROM-TO
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
@@ -302,6 +305,12 @@ static int run(int argc, char ** argv)
       typing.push_back({ atoi(argv[i] + 5), text });
       nes.setFamiKeyboard(true);
     }
+    else if (!strncmp(argv[i], "famikey=", 8)) {
+      KeyHold h;
+      sscanf(argv[i] + 8, "%d@%d-%d", &h.key, &h.from, &h.to);
+      keyHolds.push_back(h);
+      nes.setFamiKeyboard(true);
+    }
     else if (!strncmp(argv[i], "trapfile=", 9))
       trapPath = argv[i] + 9;
     else if (!strncmp(argv[i], "mic=", 4))
@@ -348,8 +357,11 @@ static int run(int argc, char ** argv)
         b |= h.buttons;
     nes.setButtons(0, b);
     nes.setMic(f >= micFrom && f <= micTo);
-    if (!typing.empty()) {
+    if (!typing.empty() || !keyHolds.empty()) {
       nes.releaseFamiKeys();
+      for (auto & h : keyHolds)
+        if (f >= h.from && f <= h.to)
+          nes.setFamiKey((FamiKey) h.key, true);
       for (auto & t : typing) {
         int k = (f - t.first) / 8, phase = (f - t.first) % 8;
         if (f < t.first || k >= (int) t.second.size() || phase >= 4)

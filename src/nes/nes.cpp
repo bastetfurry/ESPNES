@@ -102,6 +102,7 @@ void Nes::powerOn()
   if (m_chrRam)
     memset(m_chrRam, 0, 0x2000);
   m_strobe = false;
+  m_expOut = 0;
   ppu.reset();
   apu.reset(m_region);
   m_mapper->reset();
@@ -349,11 +350,13 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
         m_micNoise = (m_micNoise >> 1) ^ (-(m_micNoise & 1) & 0xb400);
         bit |= m_micNoise & 4;
       }
+      if (!port && m_tape && (m_expOut & 4))
+        bit |= m_tape->input(cpu.cycles) << 1;
 #ifdef NES_TRACE
       if (nesTraceRead)
         nesTraceRead(*this, addr, (bus & 0xe0) | bit);
 #endif
-      return bus = (bus & 0xe0) | bit;           // only bit 0 (and the mic's bit 2) is driven, the rest is open bus
+      return bus = (bus & 0xe0) | bit;           // only bit 0 (and the mic's bit 2, the tape's bit 1) is driven, the rest is open bus
     }
     default:
       if (addr >= 0x4020) {
@@ -415,6 +418,9 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   }
 
   if (addr == 0x4016) {
+    m_expOut = value & 7;
+    if (m_tape)
+      m_tape->output(cpu.cycles, value & 1);
     m_strobe = value & 1;
     if (m_strobe) {
       m_shift[0] = m_buttons[0];
@@ -606,6 +612,8 @@ NES_HOT void Nes::runFrame(bool draw)
   cpu.cycles -= c;
   m_parityBase ^= c & 1;
   apu.rebase(c);
+  if (m_tape)
+    m_tape->rebase(c);
   ++frameCount;
   m_baseUnits += c * m_unitsPerCycle - frameUnits;
 }

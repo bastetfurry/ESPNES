@@ -11,6 +11,7 @@
 #include "apu.h"
 #include "cheat.h"
 #include "state.h"
+#include "tape.h"
 
 #ifdef NES_TRACE
 class Nes;
@@ -56,6 +57,15 @@ public:
   void setButtons(int port, uint8_t buttons)  { m_buttons[port] = buttons; }
   // The Famicom's microphone on the second pad: while on, $4016 bit 2 reads noise, like a voice.
   void setMic(bool on)                        { m_mic = on; }
+  // The Data Recorder (see tape.h), nullptr for none. Its record, play and stop go through here,
+  // between frames: the tape counts time in the console's cycles.
+  void setTape(Tape * tape)                   { m_tape = tape; }
+  Tape * tape() const                         { return m_tape; }
+  void tapeRecord(size_t capacity)
+  {
+    m_tape->record(cpu.cycles, m_expOut & 1, m_region == Region::PAL ? 1662607 : 1789773, capacity);
+  }
+  void tapePlay()                             { m_tape->play(cpu.cycles); }
   // Where the picture goes: 240 line buffers of 256 bytes (32 bit aligned), the output byte for
   // each of the 64 NES colours, and whether to use FabGL's raw scanline byte order.
   void setVideoOutput(uint8_t * const * lines, uint8_t const * colorMap, bool vgaOrder)
@@ -183,6 +193,8 @@ private:
   bool       m_strobe;
   bool       m_mic = false;
   uint16_t   m_micNoise = 1;     // LFSR
+  uint8_t    m_expOut = 0;       // the last $4016 write's bits 0-2 (the expansion port's outputs)
+  Tape *     m_tape = nullptr;
 
   bool            state(StateIO & io);
 

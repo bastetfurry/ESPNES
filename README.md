@@ -72,7 +72,7 @@ Left, Right, Select, Start, B, A, and for player 2 the Mic). A key another butto
 player) already has swaps with it, Esc cancels. The keys are the same for all games and kept in
 SPIFFS (`/keys.cfg`), written only when they change. Left and right Ctrl/Alt/Shift count as one
 key, a letter works with Shift held, and a numpad key is the same with or without Num Lock (but
-not the same as the arrow keys). Esc, F1-F3 and F10 cannot be used.
+not the same as the arrow keys). Esc, F1-F3, F5-F7 and F10 cannot be used.
 
 Mic is the Famicom's microphone on the second pad: while it is held, `$4016` bit 2 reads noise,
 like someone talking into it (Famicom games use it, e.g. the Japanese Zelda's Pols Voice).
@@ -120,11 +120,11 @@ files of removed games; both ask first.
 `host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
 same frames again: picture, RAM and CPU must come out the same (all games here do).
 
-Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volume down/up, F10 switches cheats. In the list, Left/Right picks the TV system
+Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the tape, F10 switches cheats. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder). Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -198,6 +198,38 @@ No commercial ROMs are included. Two that can be had legally:
   renderer does not model. (Test 1 of "Misaligned OAM behavior" must pass: its failure path pops
   the test's own return address, which derails the whole run on any emulator that fails it.) For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
   lists Nintendo's NSO emulator at 97 of 140 on an older version of the suite.
+
+## Data Recorder
+
+The Famicom Data Recorder was a cassette recorder plugged into the Family BASIC keyboard. The
+console has no tape logic: a game toggles `$4016` bit 0 itself to write and watches `$4016`
+bit 1 to read (while bit 2 is set), each game with its own encoding. ESPNES records the signal's
+level changes in CPU cycles and plays them back exactly, so every game works the same way. A tape
+image (`.ftap`, see `src/nes/tape.h`) stores runs of square-wave periods; games time their bits
+with counted loops, so a few periods repeat exactly. Mach Rider's 22 second course save takes
+1.5 KB.
+
+On the board, F6 records, F7 stops and F5 plays. The tape is held in RAM, up to 32 KB, and stays
+in across games like a cassette left in the recorder. The PC keeps the tapes. When a recording
+stops, the board sends it over serial, and `tools/tape.py` saves it and puts tapes back in:
+
+    python3 tools/tape.py record course.ftap     records; Enter stops and saves
+    python3 tools/tape.py take course.ftap       saves the next tape recorded with F6/F7
+    python3 tools/tape.py play course.ftap       puts it in and plays it
+    python3 tools/tape.py put course.ftap        only puts it in (F5 plays)
+    python3 tools/tape.py info course.ftap       length, periods, frequencies
+    python3 tools/tape.py wav course.ftap a.wav  as sound
+
+Like on the real recorder, press play or record first and then choose LOAD or SAVE in the game.
+A recording keeps going until it is stopped, and that includes the pad reads in every frame.
+
+Mach Rider (every version except VS) has SAVE and LOAD for its designed courses in the menu, even
+on the NES. There, LOAD waits forever for a tape edge, because `$4016` bit 1 is open bus and
+always reads 0. Saving sends about 20 seconds of pulses down the pad strobe line and then
+returns. The Wii Virtual Console versions replace both calls with a trap: `$96`/`$C3` written to
+`$6000`/`$6001`, for the VC's emulator to answer.
+
+`host/nestool run ... taperec=FILE@F` records from frame F, and `tapeplay=FILE@F` plays a tape.
 
 ## Save games
 

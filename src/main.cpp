@@ -14,12 +14,14 @@
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start; player 2 and the Famicom
 //       mic on the numpad (all changed with K in the ROM list); real NES pads on GPIOs (see
-//       PAD_LATCH_GPIO). Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off.
+//       PAD_LATCH_GPIO). Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
+//       F5/F6/F7 = the Data Recorder's play/record/stop (see "Data Recorder").
 // In the ROM list, G edits the selected game's Game Genie / Action Replay codes.
 // Esc pauses the game and shows the ROM list; Enter on the paused game carries on, S saves its
 // state in one of two slots per game, L loads one (see "savestates").
 // Serial console: a number starts that ROM from the list, 'k' sets the keys, 'q' leaves the game, and
-// a b e s u d l r tap A, B, sElect, Start and the directions.
+// a b e s u d l r tap A, B, sElect, Start and the directions; P R X play, record and stop the tape,
+// U loads one (tools/tape.py).
 
 #include "compat.h"
 #include <vector>
@@ -955,7 +957,8 @@ static void padKeyEvent(fabgl::VirtualKey vk, bool down)
 static bool reservedKey(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
-  return vk == VK_ESCAPE || vk == VK_F1 || vk == VK_F2 || vk == VK_F3 || vk == VK_F10;
+  return vk == VK_ESCAPE || vk == VK_F1 || vk == VK_F2 || vk == VK_F3 || vk == VK_F10 ||
+         vk == VK_F5 || vk == VK_F6 || vk == VK_F7;
 }
 
 
@@ -1562,7 +1565,7 @@ static void overlayHook(void *, int y, uint8_t * line)
 
 static void showOverlay(char const * text)
 {
-  strncpy(s_overlayText, text, sizeof(s_overlayText) - 1);
+  snprintf(s_overlayText, sizeof(s_overlayText), "%s", text);
   s_overlayFrames = 90;
 }
 
@@ -1872,6 +1875,125 @@ static void toggleCheats()
 }
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Data Recorder (see nes/tape.h)
+//
+// One tape, in RAM; it stays in across games, as a cassette in the recorder would. The PC keeps
+// the tapes (tools/tape.py): when a recording stops, the tape goes over serial as
+//   Tape: data <hex, 64 bytes per line>   (as many lines as needed)
+//   Tape: end <size>
+// and 'U', the size, a newline and the image in hex put one in.
+
+static Tape                   s_tape;
+static constexpr size_t       TAPE_MAX = 32 * 1024;     // the longest recording, if memory allows
+
+static void sendTape()
+{
+  uint8_t const * p = s_tape.data();
+  size_t size = s_tape.size();
+  for (size_t i = 0; i < size; i += 64) {
+    char line[2 * 64 + 1];
+    size_t n = std::min<size_t>(64, size - i);
+    for (size_t k = 0; k < n; ++k)
+      snprintf(line + 2 * k, 3, "%02x", p[i + k]);
+    Serial.printf("Tape: data %s\n", line);
+  }
+  Serial.printf("Tape: end %u\n", (unsigned) size);
+}
+
+
+static void showTapeState(char const * what)
+{
+  char text[24];
+  if (s_tape.mode() == Tape::STOPPED && !s_tape.empty())
+    snprintf(text, sizeof(text), "TAPE %s %uB %us", what, (unsigned) s_tape.size(), (unsigned) s_tape.playedSeconds());
+  else
+    snprintf(text, sizeof(text), "TAPE %s", what);
+  showOverlay(text);
+  Serial.printf("Tape: %s\n", what);
+}
+
+
+static void tapeStop()
+{
+  bool recorded = s_tape.mode() == Tape::RECORDING;
+  s_tape.stop();
+  showTapeState("STOP");
+  if (recorded)
+    sendTape();
+}
+
+
+static void tapePlay()
+{
+  if (s_tape.mode() == Tape::RECORDING)
+    tapeStop();
+  if (s_tape.empty()) {
+    showTapeState("EMPTY");
+    return;
+  }
+  nes.tapePlay();
+  showTapeState("PLAY");
+}
+
+
+static void tapeRecord()
+{
+  // leave room for the file system's buffers and the menu's pictures
+  size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  size_t capacity = std::min(TAPE_MAX, largest > 24 * 1024 ? largest - 24 * 1024 : 0);
+  nes.tapeRecord(capacity);
+  if (s_tape.mode() != Tape::RECORDING) {
+    showTapeState("NO MEMORY");
+    return;
+  }
+  showTapeState("REC");
+  Serial.printf("Tape: up to %u bytes\n", (unsigned) capacity);
+}
+
+
+// 'U' came over serial: the size and the image in hex follow
+static void receiveTape()
+{
+  long size = Serial.parseInt();
+  if (size <= 0 || size > (long) TAPE_MAX) {
+    Serial.println("Tape: bad size");
+    return;
+  }
+  uint8_t * p = s_tape.loadBuffer(size);
+  if (!p) {
+    Serial.println("Tape: no memory");
+    return;
+  }
+  uint32_t last = millis();
+  long n = 0;
+  int high = -1;
+  while (n < size && millis() - last < 1000) {
+    int c = Serial.read();
+    if (c < 0)
+      continue;
+    last = millis();
+    int v = isdigit(c) ? c - '0' : isxdigit(c) ? (tolower(c) - 'a' + 10) : -1;
+    if (v < 0)
+      continue;                    // line ends, spaces
+    if (high < 0) {
+      high = v;
+    } else {
+      p[n++] = high << 4 | v;
+      high = -1;
+    }
+  }
+  if (char const * err = n < size ? "Tape: incomplete" : s_tape.load(nullptr, size)) {
+    s_tape.loadBuffer(0);
+    Serial.println(err);
+    showTapeState("BAD");
+    return;
+  }
+  Serial.printf("Tape: loaded %ld bytes\n", size);
+  showTapeState("IN");
+}
+
+
 // Runs the loaded game until Esc.
 static void runGame()
 {
@@ -1916,6 +2038,12 @@ static void runGame()
         nes.powerOn();
       if (vk == fabgl::VK_F10)
         toggleCheats();
+      if (vk == fabgl::VK_F5)
+        tapePlay();
+      if (vk == fabgl::VK_F6)
+        tapeRecord();
+      if (vk == fabgl::VK_F7)
+        tapeStop();
       if (vk == fabgl::VK_F2 || vk == fabgl::VK_F3) {
         s_volume = std::max(0, std::min(8, s_volume + (vk == fabgl::VK_F3 ? 1 : -1)));
         Serial.printf("Volume %d/8\n", s_volume);
@@ -1929,6 +2057,14 @@ static void runGame()
         return;
       if (c == 'c')
         toggleCheats();
+      if (c == 'P')
+        tapePlay();
+      if (c == 'R')
+        tapeRecord();
+      if (c == 'X')
+        tapeStop();
+      if (c == 'U')
+        receiveTape();
       static char const keys[] = "abesudlr";
       if (char const * k = strchr(keys, c)) {
         serialButtons = 1 << (k - keys);
@@ -1942,8 +2078,19 @@ static void runGame()
     int64_t t0 = esp_timer_get_time();
     if (s_overlayFrames)
       --s_overlayFrames;
+    Tape::Mode tapeMode = s_tape.mode();
     nes.runFrame(draw);
     int64_t t1 = esp_timer_get_time();
+    if (tapeMode != s_tape.mode()) {
+      // the tape ran out, or the recording filled the memory
+      if (tapeMode == Tape::RECORDING) {
+        s_tape.stop();
+        showTapeState("FULL");
+        sendTape();
+      } else {
+        showTapeState("END");
+      }
+    }
     if (draw) {
       waitCycles += nes.profWait;
       drawCycles += nes.profDraw;
@@ -2027,6 +2174,7 @@ void setup()
     Serial.println("SPIFFS could not be mounted");
   loadPadKeys();
   initPads();
+  nes.setTape(&s_tape);
 
   Serial.printf("Free heap: %u bytes, largest block %u\n",
                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),

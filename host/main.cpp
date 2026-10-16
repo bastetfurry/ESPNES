@@ -16,7 +16,10 @@
 //                                         watch=A,B,.. prints those bytes whenever they change;
 //                                         mic=FROM-TO holds the Famicom microphone in those frames;
 //                                         statetest=F saves a state at frame F, then loads it at the
-//                                         end and runs the frames from F again: they must match
+//                                         end and runs the frames from F again: they must match;
+//                                         taperec=FILE@F starts the Data Recorder recording at
+//                                         frame F and writes the tape to FILE at the end;
+//                                         tapeplay=FILE@F plays the tape FILE from frame F
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -190,6 +193,9 @@ static int run(int argc, char ** argv)
   int cheatCount = 0;
   std::vector<int> peeks, watches;
   std::vector<int16_t> audio;
+  Tape tape;
+  char const * tapeRecPath = nullptr;
+  int tapeRecAt = -1, tapePlayAt = -1;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
@@ -226,6 +232,27 @@ static int run(int argc, char ** argv)
       s_traceApu = true;
     else if (!strncmp(argv[i], "statetest=", 10))
       stateAt = atoi(argv[i] + 10);
+    else if (!strncmp(argv[i], "taperec=", 8) || !strncmp(argv[i], "tapeplay=", 9)) {
+      char * at = strrchr(argv[i], '@');
+      if (!at) {
+        fprintf(stderr, "%s: FILE@FRAME expected\n", argv[i]);
+        return 1;
+      }
+      *at = 0;
+      char const * path = strchr(argv[i], '=') + 1;
+      if (argv[i][4] == 'r') {
+        tapeRecPath = path;
+        tapeRecAt = atoi(at + 1);
+      } else {
+        auto image = loadFile(path);
+        if (char const * err = tape.load(image.data(), image.size())) {
+          fprintf(stderr, "%s: %s\n", path, err);
+          return 1;
+        }
+        tapePlayAt = atoi(at + 1);
+      }
+      nes.setTape(&tape);
+    }
     else if (!strncmp(argv[i], "mic=", 4))
       sscanf(argv[i] + 4, "%d-%d", &micFrom, &micTo);
     else if (!strncmp(argv[i], "hold=", 5)) {
@@ -279,8 +306,19 @@ static int run(int argc, char ** argv)
       }
       printf("state at frame %d: %zu bytes (limit %zu)\n", f, saved.data.size(), nes.stateSizeLimit());
     }
+    if (f == tapeRecAt) {
+      nes.tapeRecord(256 * 1024);
+      printf("tape: recording from frame %d\n", f);
+    }
+    if (f == tapePlayAt) {
+      nes.tapePlay();
+      printf("tape: playing from frame %d\n", f);
+    }
+    Tape::Mode tapeMode = tape.mode();
     inputs(f);
     nes.runFrame(true);
+    if (tapeMode == Tape::PLAYING && tape.mode() != Tape::PLAYING)
+      printf("tape: ended in frame %d\n", f);
     if (!watches.empty()) {
       static std::vector<int> last;
       std::vector<int> now;
@@ -328,6 +366,14 @@ static int run(int argc, char ** argv)
     bool same = !memcmp(frameA, s_frame, sizeof(frameA)) && !memcmp(ramA.data(), nes.ram, 2048) &&
                 !memcmp(prgA.data(), nes.prgRam, Nes::PRG_RAM_SIZE) && cyclesA == (uint32_t) nes.cpu.cycles && pcA == nes.cpu.PC;
     printf("state test: %s\n", same ? "same frame, RAM and CPU after reloading" : "DIFFERENT after reloading");
+  }
+  if (tapeRecPath) {
+    bool overflow = tape.mode() == Tape::STOPPED && tape.overflowed();
+    tape.stop();
+    FILE * tf = fopen(tapeRecPath, "wb");
+    fwrite(tape.data(), 1, tape.size(), tf);
+    fclose(tf);
+    printf("tape: %zu bytes, %u s%s\n", tape.size(), tape.playedSeconds(), overflow ? ", OVERFLOWED" : "");
   }
   running = false;
   if (worker.joinable())

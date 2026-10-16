@@ -232,6 +232,14 @@ void Apu::reset(Region region)
   m_fdsLowpass = 0;
   fds.reset();
   vrc6.reset();
+  memset(m_mmc5Pulse, 0, sizeof(m_mmc5Pulse));
+  for (auto & p : m_mmc5Pulse) {
+    p.timer = 2;
+    p.sweepNegate = true;        // no sweep: a target of period - period never mutes
+  }
+  m_mmc5Pcm = 0;
+  m_mmc5PcmAcc = 0;
+  m_mmc5Timer = 7457;
   for (int i = 0; i < METERS; ++i) {
     m_meterMin[i] = 255;
     m_meterMax[i] = 0;
@@ -330,6 +338,18 @@ NES_HOT void Apu::advance(int32_t n)
     fds.advance(n);
   if (NES_UNLIKELY(vrc6On))
     vrc6.advance(n);
+  if (NES_UNLIKELY(mmc5On)) {
+    m_mmc5Pulse[0].advance(n);
+    m_mmc5Pulse[1].advance(n);
+    m_mmc5PcmAcc += m_mmc5Pcm * n;
+    // its own frame counter: envelopes and length counters at 240 Hz
+    for (m_mmc5Timer -= n; m_mmc5Timer <= 0; m_mmc5Timer += 7457)
+      for (auto & p : m_mmc5Pulse) {
+        p.env.clock();
+        if (p.length && !p.env.loop)
+          --p.length;
+      }
+  }
   m_cycle += n;
   m_seqCycle += n;
   m_accCycles += n;
@@ -354,6 +374,11 @@ NES_HOT void Apu::emitSample()
       meter(METER_VRC6_2, vrc6.acc[1] / cycles);
       meter(METER_SAW, vrc6.acc[2] / cycles);
     }
+    if (mmc5On) {
+      meter(METER_MMC5_1, m_mmc5Pulse[0].acc / cycles);
+      meter(METER_MMC5_2, m_mmc5Pulse[1].acc / cycles);
+      meter(METER_PCM, m_mmc5PcmAcc / cycles);
+    }
   }
   m_pulse[0].acc = m_pulse[1].acc = m_tri.acc = m_noise.acc = m_dmc.acc = 0;
   if (NES_UNLIKELY(fdsOn)) {
@@ -367,6 +392,12 @@ NES_HOT void Apu::emitSample()
     // its pulses about as loud as the 2A03's, the saw (0-31) on the same scale
     mix += (vrc6.acc[0] + vrc6.acc[1] + vrc6.acc[2]) * 752 / cycles;
     vrc6.acc[0] = vrc6.acc[1] = vrc6.acc[2] = 0;
+  }
+  if (NES_UNLIKELY(mmc5On)) {
+    // the pulses as loud as the 2A03's, the PCM (0-255) about like the DMC (0-127)
+    mix += ((m_mmc5Pulse[0].acc + m_mmc5Pulse[1].acc) * 752 + m_mmc5PcmAcc * 167) / cycles;
+    m_mmc5Pulse[0].acc = m_mmc5Pulse[1].acc = 0;
+    m_mmc5PcmAcc = 0;
   }
   m_accCycles = 0;
 
@@ -454,6 +485,47 @@ uint8_t Apu::readStatus()
   m_frameIrq = false;
   m_nes->cpu.clearIrq(Cpu::IRQ_FRAME);
   return r;
+}
+
+
+void Apu::writeMmc5(uint16_t addr, uint8_t v)
+{
+  if (addr <= 0x5007) {
+    Pulse & p = m_mmc5Pulse[(addr >> 2) & 1];
+    switch (addr & 3) {
+      case 0:
+        p.duty = v >> 6;
+        p.env.loop = v & 0x20;
+        p.env.constant = v & 0x10;
+        p.env.volume = v & 0x0f;
+        break;
+      case 2:
+        p.period = (p.period & 0x700) | v;
+        break;
+      case 3:
+        p.period = (p.period & 0xff) | ((v & 7) << 8);
+        if (p.enabled)
+          p.length = s_lengthTable[v >> 3];
+        p.seq = 0;
+        p.env.start = true;
+        break;
+    }                                // (1: there is no sweep)
+  } else if (addr == 0x5011) {
+    if (v)                           // write mode: 0 is ignored
+      m_mmc5Pcm = v;
+  } else if (addr == 0x5015) {
+    for (int i = 0; i < 2; ++i) {
+      m_mmc5Pulse[i].enabled = v & (1 << i);
+      if (!m_mmc5Pulse[i].enabled)
+        m_mmc5Pulse[i].length = 0;
+    }
+  }
+}
+
+
+uint8_t Apu::readMmc5Status() const
+{
+  return (m_mmc5Pulse[0].length ? 1 : 0) | (m_mmc5Pulse[1].length ? 2 : 0);
 }
 
 

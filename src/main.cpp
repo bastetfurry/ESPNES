@@ -2662,8 +2662,8 @@ static int      s_nsfShownSeconds;
 
 // a level bar per channel, between the picture and the song line
 static constexpr int  METER_Y = 118, METER_H = 36;
-static char const *   METER_NAMES[Apu::METERS] = { "P1", "P2", "TR", "NO", "DM", "FD", "V1", "V2", "SA" };
-static const uint8_t  METER_FULL[Apu::METERS] = { 15, 15, 15, 15, 64, 63, 15, 15, 31 };
+static char const *   METER_NAMES[Apu::METERS] = { "P1", "P2", "TR", "NO", "DM", "FD", "V1", "V2", "SA", "M1", "M2", "PC" };
+static const uint8_t  METER_FULL[Apu::METERS] = { 15, 15, 15, 15, 64, 63, 15, 15, 31, 15, 15, 128 };
 static int            s_meterShown[Apu::METERS];   // pixels, falling back slowly
 static int            s_meters[Apu::METERS];       // the channels the music has, as Apu::METER_
 static int            s_meterCount;
@@ -2683,7 +2683,8 @@ static void nsfMeterChannels()
   s_meterCount = 0;
   for (int m = 0; m < Apu::METERS; ++m)
     if (m <= Apu::METER_DMC || (m == Apu::METER_FDS && (nes.nsf().chips & NSF_FDS)) ||
-        (m >= Apu::METER_VRC6_1 && (nes.nsf().chips & NSF_VRC6)))
+        (m >= Apu::METER_VRC6_1 && m <= Apu::METER_SAW && (nes.nsf().chips & NSF_VRC6)) ||
+        (m >= Apu::METER_MMC5_1 && (nes.nsf().chips & NSF_MMC5)))
       s_meters[s_meterCount++] = m;
 }
 
@@ -2696,7 +2697,8 @@ static void drawNsfMeters()
   fabgl::Canvas & cv = *s_canvas;
   static const Color COLOURS[Apu::METERS] = { Color::BrightGreen, Color::BrightGreen, Color::BrightCyan,
                                               Color::BrightYellow, Color::BrightMagenta, Color::BrightRed,
-                                              Color::BrightWhite, Color::BrightWhite, Color::Yellow };
+                                              Color::BrightWhite, Color::BrightWhite, Color::Yellow,
+                                              Color::BrightBlue, Color::BrightBlue, Color::Cyan };
   for (int i = 0; i < s_meterCount; ++i) {
     int m = s_meters[i];
     int h = (s_nsfPaused ? 0 : level[m]) * METER_H / METER_FULL[m];
@@ -2759,8 +2761,9 @@ static void drawNsfScreen()
   centred(24, n.artist, Color::White);
   centred(36, n.copyright, Color::BrightBlack);
   char chips[32];
-  snprintf(chips, sizeof(chips), "2A03%s%s, %s", n.chips & NSF_FDS ? " + FDS" : "",
-           n.chips & NSF_VRC6 ? " + VRC6" : "", nes.region() == Region::PAL ? "PAL" : "NTSC");
+  snprintf(chips, sizeof(chips), "2A03%s%s%s, %s", n.chips & NSF_FDS ? " + FDS" : "",
+           n.chips & NSF_VRC6 ? " + VRC6" : "", n.chips & NSF_MMC5 ? " + MMC5" : "",
+           nes.region() == Region::PAL ? "PAL" : "NTSC");
   centred(184, chips, Color::White);
   cv.setPenColor(Color::BrightBlack);
   cv.drawText(0, 224, "\x1b\x1a:song  Start:pause  SysRq:menu");

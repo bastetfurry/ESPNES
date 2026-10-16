@@ -268,7 +268,8 @@ No commercial ROMs are included. Two that can be had legally:
 
 NSF files (`roms/*.nsf`, listed in `settings.csv` like games) play as music: the screen shows the
 title, artist, copyright, the picture, a level bar per channel (pulse 1 and 2, triangle,
-noise, DMC, plus FDS or the VRC6's two pulses and saw when the music uses them: how far each
+noise, DMC, plus FDS, the VRC6's two pulses and saw, or the MMC5's two pulses and PCM when the
+music uses them: how far each
 one's output swings, falling back slowly),
 the song number and the play time. Left/Right on the pad
 (arrow keys, a real pad, or `l`/`r` over serial) changes the song, Start pauses, and SysRq opens
@@ -281,10 +282,12 @@ in flash. Its banks are copied into 32 KB of RAM at `$8000`-`$FFFF` (4 KB banks 
 `$5FF8`-`$5FFF`, and `$5FF6`-`$5FF7` for FDS music, which also uses `$6000`-`$7FFF` as RAM).
 
 Sound chips: the 2A03, Konami's VRC6 (`src/nes/vrc6_audio.*`: two pulse channels with 8 duty
-steps and a sawtooth, at `$9000`-`$B002`), and the FDS's (`src/nes/fds_audio.*`). The FDS has a 64-step wavetable, the
+steps and a sawtooth, at `$9000`-`$B002`), the MMC5's (two pulse channels like the 2A03's without
+a sweep, clocked by its own 240 Hz counter, and an 8 bit PCM, at `$5000`-`$5015`; the NSF mapper
+adds its multiplier and 1 KB ExRAM), and the FDS's (`src/nes/fds_audio.*`). The FDS has a 64-step wavetable, the
 pitch modulator, and the volume and modulation envelopes. It is mixed at up to 2.4 times a pulse
-channel and filtered at about 2 kHz like the real one. NSFs that need VRC7, MMC5, Namco 163 or
-Sunsoft 5B are refused for now. `host/nestool run music.nsf FRAMES out.ppm wav=out.wav
+channel and filtered at about 2 kHz like the real one. NSFs that need VRC7, Namco 163 or Sunsoft 5B
+are refused for now. `host/nestool run music.nsf FRAMES out.ppm wav=out.wav
 song=N` renders a song (`nofds` leaves the FDS out, for comparing).
 
 ## Data Recorder

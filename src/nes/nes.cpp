@@ -59,6 +59,7 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     m_isNsf = true;
     m_fdsAudio = m_nsfInfo.chips & NSF_FDS;
     m_vrc6Audio = m_nsfInfo.chips & NSF_VRC6;
+    m_mmc5Audio = m_nsfInfo.chips & NSF_MMC5;
     ppu.chrWritable = true;
     memset(prgRam, 0, 0x2000);
     setRegion(m_cart.info.region);
@@ -101,6 +102,7 @@ void Nes::eject()
   m_isNsf = false;
   m_fdsAudio = false;
   m_vrc6Audio = false;
+  m_mmc5Audio = false;
   m_portOn = false;
   m_portCall = 0;
   delete m_mapper;
@@ -412,6 +414,10 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
         return bus = m_portCall ? 0x80 : m_portResult;
       return bus;
     default:
+      if (NES_UNLIKELY(m_mmc5Audio) && addr == 0x5015) {
+        apu.run(cpu.cycles);
+        return bus = (bus & ~3) | apu.readMmc5Status();
+      }
       if (NES_UNLIKELY(m_fdsAudio) && addr >= 0x4040 && addr < 0x4098) {
         apu.run(cpu.cycles);
         int r = apu.fds.read(addr);
@@ -464,6 +470,11 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   }
 
   if (addr >= 0x4020) {
+    if (NES_UNLIKELY(m_mmc5Audio) && addr >= 0x5000 && addr <= 0x5015) {
+      apu.run(cpu.cycles);
+      apu.writeMmc5(addr, value);
+      return;
+    }
     if (NES_UNLIKELY(m_fdsAudio) && addr >= 0x4040 && addr < 0x4098) {
       apu.run(cpu.cycles);
       apu.fds.write(addr, value);
@@ -607,6 +618,7 @@ void Nes::nsfStart(int song)
   powerOn();                                   // RAM cleared, the mapper loads the banks
   apu.fdsOn = m_fdsAudio;
   apu.vrc6On = m_vrc6Audio;
+  apu.mmc5On = m_mmc5Audio;
   // the APU as an NSF expects it
   for (uint16_t a = 0x4000; a < 0x4014; ++a)
     write(a, 0);

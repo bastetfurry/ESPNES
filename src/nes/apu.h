@@ -60,11 +60,18 @@ public:
   Vrc6Audio vrc6;
   bool      vrc6On = false;
 
+  // The MMC5's sound, mixed in while mmc5On (Nes routes $5000-$5015 to it): two pulse channels
+  // as the 2A03's but without a sweep, whose envelopes and length counters the MMC5's own 240 Hz
+  // counter clocks, and an 8 bit PCM level ($5011, written). $5015 enables the pulses.
+  bool     mmc5On = false;
+  void     writeMmc5(uint16_t addr, uint8_t value);
+  uint8_t  readMmc5Status() const;
+
   // Level meters (while metersOn): how far each channel's output swung since the last call, per
   // sample: pulse 1, pulse 2, triangle, noise (0-15), DMC (0-127), FDS (0-63), VRC6 pulse 1 and 2
-  // (0-15), VRC6 saw (0-31)
+  // (0-15), VRC6 saw (0-31), MMC5 pulse 1 and 2 (0-15), MMC5 PCM (0-255)
   enum { METER_PULSE1, METER_PULSE2, METER_TRIANGLE, METER_NOISE, METER_DMC, METER_FDS,
-         METER_VRC6_1, METER_VRC6_2, METER_SAW, METERS };
+         METER_VRC6_1, METER_VRC6_2, METER_SAW, METER_MMC5_1, METER_MMC5_2, METER_PCM, METERS };
   bool     metersOn = false;
   void     takeMeters(uint8_t out[METERS]);
 
@@ -152,6 +159,10 @@ private:
   int32_t  m_loadAt = 0;
 
   Pulse    m_pulse[2];
+  Pulse    m_mmc5Pulse[2];
+  uint8_t  m_mmc5Pcm;
+  int32_t  m_mmc5PcmAcc;
+  int32_t  m_mmc5Timer;          // CPU cycles to the MMC5's next 240 Hz tick
   Triangle m_tri;
   Noise    m_noise;
   Dmc      m_dmc;

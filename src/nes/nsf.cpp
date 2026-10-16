@@ -42,7 +42,7 @@ char const * parseNsf(uint8_t const * image, size_t size, NsfInfo * info)
   info->chips = image[0x7b];
   info->data = image + 0x80;
   info->dataSize = size - 0x80;
-  if (info->chips & ~(NSF_FDS | NSF_VRC6))
+  if (info->chips & ~(NSF_FDS | NSF_VRC6 | NSF_MMC5))
     return "This NSF needs a sound chip ESPNES does not have yet";
   if (!(info->chips & NSF_FDS) && !info->bankSwitched && info->load < 0x8000)
     return "NSF load address below $8000";
@@ -109,6 +109,17 @@ public:
 
   void writeLow(uint16_t addr, uint8_t value) override
   {
+    if (m_info.chips & NSF_MMC5) {
+      // the MMC5's multiplier and its 1 KB ExRAM, which MMC5 music may use
+      if (addr == 0x5205 || addr == 0x5206) {
+        m_factor[addr - 0x5205] = value;
+        return;
+      }
+      if (addr >= 0x5c00 && addr < 0x5ff6) {
+        m_exram[addr - 0x5c00] = value;
+        return;
+      }
+    }
     if (addr >= 0x5ff8)
       bank(8 + (addr - 0x5ff8), value);
     else if ((addr == 0x5ff6 || addr == 0x5ff7) && (m_info.chips & NSF_FDS))
@@ -121,6 +132,15 @@ public:
     static const uint8_t IDLE[3] = { 0x4c, NSF_IDLE & 0xff, NSF_IDLE >> 8 };
     if (addr >= NSF_IDLE && addr < NSF_IDLE + 3)
       return IDLE[addr - NSF_IDLE];
+    if (m_info.chips & NSF_MMC5) {
+      unsigned product = m_factor[0] * m_factor[1];
+      if (addr == 0x5205)
+        return product & 0xff;
+      if (addr == 0x5206)
+        return product >> 8;
+      if (addr >= 0x5c00 && addr < 0x5ff6)
+        return m_exram[addr - 0x5c00];
+    }
     return -1;
   }
 
@@ -134,6 +154,8 @@ public:
 private:
   NsfInfo const & m_info;
   uint8_t *       m_ram;
+  uint8_t         m_factor[2] = { 0xff, 0xff };
+  uint8_t         m_exram[0x3f6] = { };
 };
 
 

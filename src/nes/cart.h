@@ -67,6 +67,12 @@ public:
   virtual void lineStart(int y) { }
   virtual void vblank() { }
 
+  // An IRQ counter that counts CPU cycles (the VRCs) tells Nes the cycle of its next IRQ
+  // (Nes::setMapperIrqAt); Nes calls irqTime(cycle) when the CPU gets there, and rebase() at the
+  // end of each frame, when the frame relative cycle numbers go back by 'cycles'.
+  virtual void irqTime(int32_t cycle) { }
+  virtual void rebase(int32_t cycles) { }
+
   // A CPU write to PPUCTRL ($2000): the MMC5 picks its CHR bank sets by the sprite size.
   bool         wantsPpuCtrl = false;
   virtual void ppuCtrl(uint8_t value) { }

@@ -83,6 +83,8 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     m_chrRam = (uint8_t *) malloc(0x2000);
   if (m_cart.info.mirroring == Mirroring::FourScreen)
     m_fourScreenRam = (uint8_t *) malloc(0x800);
+  // the VRC7's FM sound (without memory for it, the game runs silent)
+  m_vrc7Audio = m_cart.info.mapper == 85 && apu.vrc7.start();
   m_mapper = createMapper(m_cart.info.mapper, *this);
   if (!prgRam || (!m_cart.chr && !m_chrRam) || (m_cart.info.mirroring == Mirroring::FourScreen && !m_fourScreenRam) || !m_mapper) {
     eject();
@@ -113,6 +115,7 @@ void Nes::eject()
   m_s5bAudio = false;
   m_n163Audio = false;
   m_vrc7Audio = false;
+  m_irqAt = INT32_MAX;
   apu.vrc7.stop();
   apu.vrc7On = false;
   m_portOn = false;
@@ -152,8 +155,16 @@ void Nes::powerOn()
   m_strobe = false;
   m_expOut = 0;
   m_famiRow = 0;
+  m_irqAt = INT32_MAX;
   ppu.reset();
   apu.reset(m_region);
+  // the expansion sound the cartridge or music has
+  apu.fdsOn = m_fdsAudio;
+  apu.vrc6On = m_vrc6Audio;
+  apu.mmc5On = m_mmc5Audio;
+  apu.s5bOn = m_s5bAudio;
+  apu.n163On = m_n163Audio;
+  apu.vrc7On = m_vrc7Audio;
   m_mapper->reset();
   m_baseUnits = 0;
   m_parityBase = 0;
@@ -378,8 +389,16 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
   if (NES_UNLIKELY(cpu.cycles - 1 >= m_dmaArmed))
     dmaInRead(addr);
 
-  if (addr < 0x4000)
+  if (addr < 0x4000) {
+#ifdef NES_TRACE
+    if (nesTraceRead && (addr & 7) == 2) {
+      uint8_t r = bus = ppu.readRegister(addr);
+      nesTraceRead(*this, 0x2002, r);
+      return r;
+    }
+#endif
     return bus = ppu.readRegister(addr);
+  }
 
   if (addr >= 0x6000)
     return bus = prgRam[addr & 0x1fff];
@@ -458,7 +477,7 @@ void (*nesTraceRead)(Nes & nes, uint16_t addr, uint8_t value);
 NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 {
 #ifdef NES_TRACE
-  if (nesTraceWrite && (addr < 0x4020 || (addr >= 0x5000 && addr < 0x6000)))
+  if (nesTraceWrite && (addr < 0x4020 || (addr >= 0x5000 && addr < 0x6000) || addr >= 0xe000))
     nesTraceWrite(*this, addr, value);
 #endif
   if (addr < 0x4000) {
@@ -597,6 +616,23 @@ NES_HOT void Nes::runCpu(int32_t until)
       cpu.cycles = until;
     return;
   }
+  // A mapper's IRQ on the way: the CPU stops there for it. The 6502 sees an IRQ in the last cycle
+  // of an instruction, so the instruction the IRQ comes up in (or starts with) runs first; the
+  // CPU stopped before it.
+  while (NES_UNLIKELY(m_irqAt < until)) {
+    int32_t at = m_irqAt;
+    runCpuTo(at);
+    if (cpu.cycles <= at)
+      cpu.step();
+    m_irqAt = INT32_MAX;
+    m_mapper->irqTime(at);
+  }
+  runCpuTo(until);
+}
+
+
+NES_HOT void Nes::runCpuTo(int32_t until)
+{
   for (;;) {
     int32_t dma = apu.nextDmaCycle();
     if (NES_LIKELY(dma >= until)) {
@@ -655,12 +691,6 @@ void Nes::nsfStart(int song)
   m_nsfSong = song < 1 ? 1 : song > m_nsfInfo.songs ? m_nsfInfo.songs : song;
   memset(prgRam, 0, 0x2000);
   powerOn();                                   // RAM cleared, the mapper loads the banks
-  apu.fdsOn = m_fdsAudio;
-  apu.vrc6On = m_vrc6Audio;
-  apu.mmc5On = m_mmc5Audio;
-  apu.s5bOn = m_s5bAudio;
-  apu.n163On = m_n163Audio;
-  apu.vrc7On = m_vrc7Audio;
   // the APU as an NSF expects it
   for (uint16_t a = 0x4000; a < 0x4014; ++a)
     write(a, 0);
@@ -800,9 +830,12 @@ NES_HOT void Nes::runFrame(bool draw)
   // rebase the cycle counter to the start of the next frame
   int32_t frameUnits = lines * UNITS_PER_LINE;
   int32_t c = (frameUnits - m_baseUnits) / m_unitsPerCycle;
-  cpu.cycles -= c;
+  cpu.rebase(c);
   m_parityBase ^= c & 1;
   apu.rebase(c);
+  if (m_irqAt != INT32_MAX)
+    m_irqAt -= c;
+  m_mapper->rebase(c);
   if (m_tape)
     m_tape->rebase(c);
   ++frameCount;

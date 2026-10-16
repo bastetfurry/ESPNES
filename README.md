@@ -16,7 +16,8 @@ board: 4 MB of flash on the chip, **no PSRAM, no SD card**. The ROMs are built i
   IRQ), 5 (MMC5: all PRG/CHR modes, separate sprite/background CHR sets for 8x16 sprites, ExRAM
   as nametable, fill mode, scanline IRQ, multiplier; not its extended attributes, split screen or
   sound), 7 (AxROM, with AOROM bus conflicts), 71 (Camerica/Codemasters, with Fire Hawk's
-  mirroring). The cartridge layer works through bank pointer tables, so a
+  mirroring), 85 (VRC7: Lagrange Point, with its FM sound and the VRC IRQ counter, computed
+  lazily to the CPU cycle). The cartridge layer works through bank pointer tables, so a
   mapper only repoints 8 KB PRG and 1 KB CHR pages.
 - **APU:** both pulse channels with sweep and envelope, triangle, noise, DMC sample playback with
   its IRQ, the frame counter (4 and 5 step, frame IRQ), `$4015` status. Output at 22050 Hz on the
@@ -384,6 +385,9 @@ are saved in SPIFFS next to the save games, only when changed. Over serial: `g` 
 the editor (characters type, Enter adds, `!` removes, `~` leaves), `c` in a game toggles.
 
 ## Per game settings
+
+A line in `settings.csv` that starts with `#` is a comment. When it is a game's line commented
+out, that game is left out of the build even though its file stays in `roms/`.
 
 Settings per game go into the options column of `settings.csv` or into an optional `Game.cfg`
 next to `Game.nes` in `roms/`, which is built in with it:

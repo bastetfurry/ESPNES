@@ -189,6 +189,8 @@ public:
   void setMirroring(Mirroring mirroring);
   void mapNametable(int slot, uint8_t * page)  { ppu.ntMap[slot] = page; }
   void mapperPpuCtrl(uint8_t value)            { if (m_mapper && m_mapper->wantsPpuCtrl) m_mapper->ppuCtrl(value); }
+  // the frame relative CPU cycle of the mapper's next IRQ (INT32_MAX: none), see Mapper::irqTime
+  void setMapperIrqAt(int32_t cycle)           { m_irqAt = cycle; }
 
   // --- CPU bus ---
   inline uint8_t read(uint16_t addr);
@@ -207,6 +209,8 @@ private:
 
   uint8_t readIO(uint16_t addr);
   void    runCpu(int32_t until);
+  void    runCpuTo(int32_t until);
+  int32_t m_irqAt = INT32_MAX;       // the mapper's next IRQ (setMapperIrqAt)
   void    dmaInRead(uint16_t addr);
   int32_t m_dmaArmed = INT32_MAX;    // DMC DMA cycle while its instruction runs (runCpu)
   void    writeIO(uint16_t addr, uint8_t value);

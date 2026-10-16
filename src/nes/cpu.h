@@ -35,6 +35,16 @@ public:
   // right after itself, unless the edge fell into its last cycle; then one instruction later.
   void nmiAtCycle(int32_t cycle)  { nmiPending = NMI_EDGE; m_nmiEdge = cycle; }
   void cancelNmi()                { nmiPending = 0; }
+  // the end of a frame: the frame relative cycle numbers go back by 'c' (cycles itself, and the
+  // ones remembered: the last CLI/SEI/PLP, an NMI edge)
+  void rebase(int32_t c)
+  {
+    cycles -= c;
+    if (m_iChanged != INT32_MIN)
+      m_iChanged -= c;
+    if (nmiPending == NMI_EDGE)
+      m_nmiEdge -= c;
+  }
   void setIrq(uint8_t source)     { irqLines |= source; }
   void clearIrq(uint8_t source)   { irqLines &= ~source; }
 

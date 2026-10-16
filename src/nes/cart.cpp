@@ -749,6 +749,171 @@ private:
 };
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Mapper 85: Konami's VRC7 (Lagrange Point; Tiny Toon Adventures 2). The second register of each
+// pair is at A4 (VRC7a: $x010) or A3 (VRC7b: $x008):
+//   $8000, $8010, $9000  8 KB PRG banks at $8000, $A000, $C000 ($E000 is the last bank)
+//   $A000-$D010          eight 1 KB CHR banks        $9010/$9030  the FM sound (Nes, Vrc7Audio)
+//   $E000                mirroring (bits 0-1: vertical, horizontal, single A, single B), bit 6
+//                        holds the sound in reset, bit 7 enables the WRAM (always on here)
+//   $E010 IRQ latch      $F000 IRQ control           $F010 IRQ acknowledge
+//
+// The IRQ counter is the VRCs' own: an 8 bit counter that counts up from the latch, clocked by
+// every CPU cycle (control bit 2) or by a prescaler that loses 3 per CPU cycle from 341 (once a
+// scanline); at $FF it reloads and raises the IRQ. It is computed lazily: sync() catches it up
+// to a cycle, schedule() tells Nes the cycle of the next IRQ, where Nes stops the CPU for it.
+
+class MapperVRC7 : public Mapper {
+public:
+  using Mapper::Mapper;
+
+  void reset() override
+  {
+    m_prg[0] = 0; m_prg[1] = 1; m_prg[2] = 2;
+    for (int i = 0; i < 8; ++i)
+      m_chr[i] = i;
+    m_control = 0;
+    m_latch = m_counter = 0;
+    m_irqControl = 0;
+    m_prescaler = 341;
+    m_last = m_nes.cpu.cycles;
+    m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+    restore();
+  }
+
+  void state(StateIO & io) override
+  {
+    io.pod(m_prg); io.pod(m_chr); io.pod(m_control); io.pod(m_latch); io.pod(m_counter);
+    io.pod(m_irqControl); io.pod(m_prescaler); io.pod(m_last);
+  }
+
+  void restore() override
+  {
+    Cart const & c = m_nes.cart();
+    int banks = c.info.prgSize / 0x2000;
+    for (int i = 0; i < 3; ++i)
+      m_nes.mapPrg8K(i, c.prg + (m_prg[i] % banks) * 0x2000);
+    m_nes.mapPrg8K(3, c.prg + (banks - 1) * 0x2000);
+    for (int i = 0; i < 8; ++i)
+      m_nes.mapChr1K(i, m_chr[i]);
+    static const Mirroring MIRRORING[4] = { Mirroring::Vertical, Mirroring::Horizontal,
+                                            Mirroring::SingleA, Mirroring::SingleB };
+    m_nes.setMirroring(MIRRORING[m_control & 3]);
+    schedule();
+  }
+
+  void writeRegister(uint16_t addr, uint8_t value) override
+  {
+    bool second = addr & 0x18;
+    switch (addr & 0xf000) {
+      case 0x8000:
+        m_prg[second] = value & 0x3f;
+        restore();
+        break;
+      case 0x9000:
+        if (!second) {                       // $9010/$9030 are the sound's
+          m_prg[2] = value & 0x3f;
+          restore();
+        }
+        break;
+      case 0xa000: case 0xb000: case 0xc000: case 0xd000: {
+        int i = ((addr >> 12) - 0xa) * 2 + second;
+        m_chr[i] = value;
+        m_nes.mapChr1K(i, value);
+        break;
+      }
+      case 0xe000:
+        if (!second) {
+          if ((value & 0x40) && !(m_control & 0x40))
+            m_nes.apu.vrc7.reset();          // the sound's registers cleared, it goes silent
+          m_control = value;
+          restore();
+        } else {
+          sync(m_nes.cpu.cycles);
+          m_latch = value;
+          schedule();
+        }
+        break;
+      case 0xf000:
+        sync(m_nes.cpu.cycles);
+        if (!second) {
+          m_irqControl = value & 7;
+          if (value & 2) {                   // enabled: the counter starts at the latch
+            m_counter = m_latch;
+            m_prescaler = 341;
+          }
+        } else {
+          // acknowledge: "enable after acknowledge" becomes the enable
+          m_irqControl = (m_irqControl & ~2) | (m_irqControl & 1) << 1;
+        }
+        m_nes.cpu.clearIrq(Cpu::IRQ_MAPPER);
+        schedule();
+        break;
+    }
+  }
+
+  void irqTime(int32_t cycle) override
+  {
+    sync(cycle);
+    schedule();
+  }
+
+  void rebase(int32_t cycles) override
+  {
+    m_last -= cycles;
+  }
+
+private:
+  // the counter up to 'now'
+  void sync(int32_t now)
+  {
+    int32_t elapsed = now - m_last;
+    if (elapsed <= 0)
+      return;
+    m_last = now;
+    if (!(m_irqControl & 2))
+      return;
+    uint32_t clocks = elapsed;
+    if (!(m_irqControl & 4)) {
+      m_prescaler -= 3 * elapsed;
+      clocks = 0;
+      if (m_prescaler <= 0) {
+        int32_t n = -m_prescaler / 341 + 1;
+        m_prescaler += 341 * n;
+        clocks = n;
+      }
+    }
+    uint32_t toIrq = 256 - m_counter;
+    if (clocks < toIrq) {
+      m_counter += clocks;
+      return;
+    }
+    clocks -= toIrq;
+    m_counter = m_latch;
+    m_nes.cpu.setIrq(Cpu::IRQ_MAPPER);
+    m_counter += clocks % (256 - m_latch);
+  }
+
+  // the cycle of the next IRQ, for Nes
+  void schedule()
+  {
+    if (!(m_irqControl & 2)) {
+      m_nes.setMapperIrqAt(INT32_MAX);
+      return;
+    }
+    int32_t clocks = 256 - m_counter;
+    int32_t cycles = m_irqControl & 4 ? clocks : (m_prescaler + 341 * (clocks - 1) + 2) / 3;
+    m_nes.setMapperIrqAt(m_last + (cycles > 0 ? cycles : 1));
+  }
+
+  uint8_t m_prg[3], m_chr[8];
+  uint8_t m_control;
+  uint8_t m_latch, m_counter, m_irqControl;
+  int32_t m_prescaler;
+  int32_t m_last;                          // the cycle the counter is at
+};
+
+
 Mapper * createMapper(int number, Nes & nes)
 {
   switch (number) {
@@ -759,6 +924,7 @@ Mapper * createMapper(int number, Nes & nes)
     case 5:  return new MapperMMC5(nes);
     case 7:  return new MapperAxROM(nes);
     case 71: return new MapperCamerica(nes);
+    case 85: return new MapperVRC7(nes);
     default: return nullptr;
   }
 }
@@ -766,5 +932,5 @@ Mapper * createMapper(int number, Nes & nes)
 
 bool mapperSupported(int number)
 {
-  return number <= 2 || number == 4 || number == 5 || number == 7 || number == 71;
+  return number <= 2 || number == 4 || number == 5 || number == 7 || number == 71 || number == 85;
 }

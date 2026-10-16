@@ -185,6 +185,7 @@ static uint8_t parseButtons(char const * s)
 
 static int run(int argc, char ** argv)
 {
+
   auto rom = loadFile(argv[2]);
   int frames = atoi(argv[3]);
   char const * outPath = argv[4];
@@ -366,21 +367,22 @@ static int run(int argc, char ** argv)
   if (nes.isNsf()) {
     NsfInfo const & n = nes.nsf();
     nes.nsfStart(song ? song : n.firstSong);
-    if (noFds)
-      nes.apu.fdsOn = false;                    // for comparing: the 2A03 alone
-    if (noVrc6)
-      nes.apu.vrc6On = false;
-    if (noMmc5)
-      nes.apu.mmc5On = false;
-    if (no5b)
-      nes.apu.s5bOn = false;
-    if (noN163)
-      nes.apu.n163On = false;
-    if (noVrc7)
-      nes.apu.vrc7On = false;
     printf("NSF \"%s\" by %s, (c) %s: song %d of %d, chips $%02X, %s\n", n.title, n.artist, n.copyright,
            nes.nsfSong(), n.songs, n.chips, nes.region() == Region::PAL ? "PAL" : "NTSC");
   }
+  // for comparing: the sound without an expansion chip (music or game)
+  if (noFds)
+    nes.apu.fdsOn = false;
+  if (noVrc6)
+    nes.apu.vrc6On = false;
+  if (noMmc5)
+    nes.apu.mmc5On = false;
+  if (no5b)
+    nes.apu.s5bOn = false;
+  if (noN163)
+    nes.apu.n163On = false;
+  if (noVrc7)
+    nes.apu.vrc7On = false;
   if (cheatCount) {
     nes.setCheats(cheats, cheatCount);
     nes.enableCheats(true);

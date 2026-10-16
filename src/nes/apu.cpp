@@ -232,6 +232,7 @@ void Apu::reset(Region region)
   m_fdsLowpass = 0;
   fds.reset();
   vrc6.reset();
+  s5b.reset();
   memset(m_mmc5Pulse, 0, sizeof(m_mmc5Pulse));
   for (auto & p : m_mmc5Pulse) {
     p.timer = 2;
@@ -338,6 +339,8 @@ NES_HOT void Apu::advance(int32_t n)
     fds.advance(n);
   if (NES_UNLIKELY(vrc6On))
     vrc6.advance(n);
+  if (NES_UNLIKELY(s5bOn))
+    s5b.advance(n);
   if (NES_UNLIKELY(mmc5On)) {
     m_mmc5Pulse[0].advance(n);
     m_mmc5Pulse[1].advance(n);
@@ -374,6 +377,9 @@ NES_HOT void Apu::emitSample()
       meter(METER_VRC6_2, vrc6.acc[1] / cycles);
       meter(METER_SAW, vrc6.acc[2] / cycles);
     }
+    if (s5bOn)
+      for (int i = 0; i < 3; ++i)
+        meter(METER_5B_A + i, s5b.acc[i] / cycles);
     if (mmc5On) {
       meter(METER_MMC5_1, m_mmc5Pulse[0].acc / cycles);
       meter(METER_MMC5_2, m_mmc5Pulse[1].acc / cycles);
@@ -392,6 +398,12 @@ NES_HOT void Apu::emitSample()
     // its pulses about as loud as the 2A03's, the saw (0-31) on the same scale
     mix += (vrc6.acc[0] + vrc6.acc[1] + vrc6.acc[2]) * 752 / cycles;
     vrc6.acc[0] = vrc6.acc[1] = vrc6.acc[2] = 0;
+  }
+  if (NES_UNLIKELY(s5bOn)) {
+    // a channel at its loudest (255) about twice a 2A03 pulse at 15: the chip is loud, and its
+    // logarithmic volume puts the usual settings far below that
+    mix += (s5b.acc[0] + s5b.acc[1] + s5b.acc[2]) * 88 / cycles;
+    s5b.acc[0] = s5b.acc[1] = s5b.acc[2] = 0;
   }
   if (NES_UNLIKELY(mmc5On)) {
     // the pulses as loud as the 2A03's, the PCM (0-255) about like the DMC (0-127)

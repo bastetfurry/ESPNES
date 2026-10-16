@@ -60,6 +60,7 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     m_fdsAudio = m_nsfInfo.chips & NSF_FDS;
     m_vrc6Audio = m_nsfInfo.chips & NSF_VRC6;
     m_mmc5Audio = m_nsfInfo.chips & NSF_MMC5;
+    m_s5bAudio = m_nsfInfo.chips & NSF_5B;
     ppu.chrWritable = true;
     memset(prgRam, 0, 0x2000);
     setRegion(m_cart.info.region);
@@ -103,6 +104,7 @@ void Nes::eject()
   m_fdsAudio = false;
   m_vrc6Audio = false;
   m_mmc5Audio = false;
+  m_s5bAudio = false;
   m_portOn = false;
   m_portCall = 0;
   delete m_mapper;
@@ -458,6 +460,13 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
         apu.vrc6.write(a, value);
       }
     }
+    if (NES_UNLIKELY(m_s5bAudio) && addr >= 0xc000) {
+      apu.run(cpu.cycles);
+      if (addr < 0xe000)
+        apu.s5b.select(value);
+      else
+        apu.s5b.write(value);
+    }
     m_mapper->writeRegister(addr, value);
     return;
   }
@@ -619,6 +628,7 @@ void Nes::nsfStart(int song)
   apu.fdsOn = m_fdsAudio;
   apu.vrc6On = m_vrc6Audio;
   apu.mmc5On = m_mmc5Audio;
+  apu.s5bOn = m_s5bAudio;
   // the APU as an NSF expects it
   for (uint16_t a = 0x4000; a < 0x4014; ++a)
     write(a, 0);

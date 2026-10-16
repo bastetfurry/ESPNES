@@ -42,7 +42,7 @@ char const * parseNsf(uint8_t const * image, size_t size, NsfInfo * info)
   info->chips = image[0x7b];
   info->data = image + 0x80;
   info->dataSize = size - 0x80;
-  if (info->chips & ~(NSF_FDS | NSF_VRC6 | NSF_MMC5))
+  if (info->chips & ~(NSF_FDS | NSF_VRC6 | NSF_MMC5 | NSF_5B))
     return "This NSF needs a sound chip ESPNES does not have yet";
   if (!(info->chips & NSF_FDS) && !info->bankSwitched && info->load < 0x8000)
     return "NSF load address below $8000";

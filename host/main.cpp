@@ -29,7 +29,7 @@
 //                                         (a SPEC with call addresses 0 is Family BASIC's: the file
 //                                         is the 128 byte header and the data);
 //                                         song=N plays song N of an NSF (default: its first),
-//                                         nofds / novrc6 / nommc5 leave that chip's sound out
+//                                         nofds / novrc6 / nommc5 / no5b leave that chip's sound out
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -208,7 +208,7 @@ static int run(int argc, char ** argv)
   char const * tapeRecPath = nullptr;
   int tapeRecAt = -1, tapePlayAt = -1;
   int song = 0;
-  bool noFds = false, noVrc6 = false, noMmc5 = false;
+  bool noFds = false, noVrc6 = false, noMmc5 = false, no5b = false;
   unsigned trapSave = 0, trapLoad = 0;
   std::vector<std::pair<int, int>> trapBlocks;
   char const * trapPath = nullptr;
@@ -324,6 +324,8 @@ static int run(int argc, char ** argv)
       noVrc6 = true;
     else if (!strcmp(argv[i], "nommc5"))
       noMmc5 = true;
+    else if (!strcmp(argv[i], "no5b"))
+      no5b = true;
     else if (!strncmp(argv[i], "song=", 5))
       song = atoi(argv[i] + 5);
     else if (!strncmp(argv[i], "trapfile=", 9))
@@ -366,6 +368,8 @@ static int run(int argc, char ** argv)
       nes.apu.vrc6On = false;
     if (noMmc5)
       nes.apu.mmc5On = false;
+    if (no5b)
+      nes.apu.s5bOn = false;
     printf("NSF \"%s\" by %s, (c) %s: song %d of %d, chips $%02X, %s\n", n.title, n.artist, n.copyright,
            nes.nsfSong(), n.songs, n.chips, nes.region() == Region::PAL ? "PAL" : "NTSC");
   }

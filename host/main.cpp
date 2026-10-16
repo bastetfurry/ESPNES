@@ -26,6 +26,8 @@
 //                                         one key (famikey.h's number) in those frames
 //                                         trap=SPEC (from tools/tapetrap.py) traps the game's
 //                                         tape save/load: the data goes to/comes from trapfile=FILE
+//                                         (a SPEC with call addresses 0 is Family BASIC's: the file
+//                                         is the 128 byte header and the data)
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -289,7 +291,8 @@ static int run(int argc, char ** argv)
         }
       }
       nes.setRomPatches(patches.data(), patches.size());
-      nes.enableVcCall(true);
+      nes.enableVcCall(trapSave != 0);
+      nes.enablePortCall(trapSave == 0);
     }
     else if (!strncmp(argv[i], "type=", 5)) {
       char * colon = strchr(argv[i], ':');
@@ -402,6 +405,54 @@ static int run(int argc, char ** argv)
     nes.runFrame(true);
     if (tapeMode == Tape::PLAYING && tape.mode() != Tape::PLAYING)
       printf("tape: ended in frame %d\n", f);
+    if (uint8_t op = nes.portCall()) {
+      // Family BASIC: header at the first block (128 bytes), the data from its load address
+      static std::vector<uint8_t> file;
+      auto mem = [&](int a) -> uint8_t & { return a < 0x2000 ? nes.ram[a & 0x7ff] : nes.prgRam[a & 0x1fff]; };
+      int hdr = trapBlocks.empty() ? 0x500 : trapBlocks[0].first;
+      auto field = [&](std::vector<uint8_t> const & h, int at) { return h[at] | h[at + 1] << 8; };
+      uint8_t result = 0;
+      if (op == 1) {
+        file.assign(128, 0);
+        for (int k = 0; k < 128; ++k)
+          file[k] = mem(hdr + k);
+      } else if (op == 2 && file.size() >= 128) {
+        int size = field(file, 18), at = field(file, 20);
+        file.resize(128);
+        for (int k = 0; k < size; ++k)
+          file.push_back(mem(at + k));
+        if (FILE * tf = trapPath ? fopen(trapPath, "wb") : nullptr) {
+          fwrite(file.data(), 1, file.size(), tf);
+          fclose(tf);
+        }
+      } else if (op == 3) {
+        file = trapPath ? loadFile(trapPath) : std::vector<uint8_t>();
+        if (file.size() < 128)
+          result = 2;
+        else
+          for (int k = 0; k < 128; ++k)
+            mem(hdr + k) = file[k];
+        // where BASIC's own read loop leaves its pointers ($AD/$AE, end $AF/$B0)
+        nes.ram[0xad] = nes.ram[0xaf] = (hdr + 128) & 0xff;
+        nes.ram[0xae] = nes.ram[0xb0] = (hdr + 128) >> 8;
+      } else if (op == 4 || op == 5) {
+        int size = file.size() >= 128 ? field(file, 18) : -1, at = file.size() >= 128 ? field(file, 20) : 0;
+        if (size < 0 || (int) file.size() < 128 + size)
+          result = 2;
+        for (int k = 0; !result && k < size; ++k) {
+          if (op == 4)
+            mem(at + k) = file[128 + k];
+          else if (mem(at + k) != file[128 + k])
+            result = 2;
+        }
+        if (!result) {
+          nes.ram[0xad] = nes.ram[0xaf] = (at + size) & 0xff;
+          nes.ram[0xae] = nes.ram[0xb0] = (at + size) >> 8;
+        }
+      }
+      printf("trap: call %d in frame %d: %s\n", op, f, result ? "failed" : "done");
+      nes.finishPortCall(result);
+    }
     if (uint16_t call = nes.vcCall()) {
       auto mem = [&](int a) -> uint8_t & { return a < 0x2000 ? nes.ram[a & 0x7ff] : nes.prgRam[a & 0x1fff]; };
       bool save = call == trapSave;

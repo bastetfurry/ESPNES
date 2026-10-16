@@ -11,18 +11,21 @@ same values), numbers 0-9 are $01-$0A, larger ones $12 + 16 bit, &H numbers $11 
 numbers after GOTO, GOSUB, THEN, RESTORE and in their lists $0B + 16 bit. Text in strings,
 after REM, ' and DATA stays as typed. Characters outside ASCII are written as {XX} (hex).
 
-    python3 tools/fbasic.py list TAPE.ftap             the programs on a tape (files of other
-                                                       types are listed by name and size)
-    python3 tools/fbasic.py export TAPE.ftap OUT.bas   the first program as text
-    python3 tools/fbasic.py import IN.bas OUT.ftap [NAME]
-                                                       a tape with the program (NAME: the file's
-                                                       name for LOAD "NAME", else the file name)
-With the board (a game with the Famicom keyboard running, see tools/tape.py):
-    python3 tools/fbasic.py send IN.bas                puts the program's tape in, types LOAD
-                                                       and plays it
-    python3 tools/fbasic.py receive OUT.bas [NAME]     records, types SAVE "NAME", and when
-                                                       you press Enter (after BASIC's OK) takes
-                                                       the tape and writes the listing
+A FILE is a tape (.ftap) or a file as the board's tape trap keeps it (in a slot, or from
+tools/tape.py file): the 128 byte header and the data.
+
+    python3 tools/fbasic.py list FILE                  the programs in it (files of other types
+                                                       are listed by name and size)
+    python3 tools/fbasic.py export FILE OUT.bas        the first program as text
+    python3 tools/fbasic.py import IN.bas OUT [NAME]   the program as a tape (OUT ending in .ftap)
+                                                       or a trap file (else); NAME: the file's
+                                                       name for LOAD "NAME", else the file name
+With the board (Family BASIC running):
+    python3 tools/fbasic.py send IN.bas                types LOAD and gives BASIC the program:
+                                                       through the tape trap, or as a tape
+    python3 tools/fbasic.py receive OUT.bas [NAME]     types SAVE "NAME" and writes the listing
+                                                       (without the trap: records the tape;
+                                                       press Enter after BASIC's OK)
 """
 
 import os
@@ -111,6 +114,26 @@ def files_of(image):
     return files
 
 
+def read_files(path):
+    """The files in a tape or a trap file."""
+    image = open(path, "rb").read()
+    if image[:4] == b"FTAP":
+        return files_of(image)
+    if len(image) < 128:
+        raise ValueError("%s: neither a tape nor a trap file" % path)
+    size, load = struct.unpack_from("<HH", image, 18)
+    return [({"type": image[0], "name": name_of(image), "size": size, "load": load}, image[128:128 + size])]
+
+
+def header_of(kind, name, data):
+    header = bytearray(128)
+    header[0] = kind
+    raw = name.encode("latin-1")[:16]
+    header[1:17] = raw + (b"\x00" + b" " * 15 if len(raw) < 16 else b"")[:16 - len(raw)]
+    struct.pack_into("<HH", header, 18, len(data), LOAD_ADDRESS)
+    return bytes(header)
+
+
 def name_of(header):
     name = header[1:17].split(b"\x00")[0]
     return name.decode("latin-1").rstrip()
@@ -145,12 +168,7 @@ def tape_of(files, leader=2000):
         periods(LONG, 1)
 
     for kind, name, data in files:
-        header = bytearray(128)
-        header[0] = kind
-        raw = name.encode("latin-1")[:16]
-        header[1:17] = raw + (b"\x00" + b" " * 15 if len(raw) < 16 else b"")[:16 - len(raw)]
-        struct.pack_into("<HH", header, 18, len(data), LOAD_ADDRESS)
-        block(bytes(header), 40)
+        block(header_of(kind, name, data), 40)
         block(data, 20)
     return tape.encode(0, CLOCK, runs)
 
@@ -293,50 +311,96 @@ def tokenize(text):
 
 ###############################################################################
 
+def program_name(path, given=None):
+    return given or os.path.splitext(os.path.basename(path))[0].upper()
+
+
+def wait_for(board, prefixes, seconds):
+    """The board's next line starting with one of prefixes, or None after the time."""
+    end = time.time() + seconds
+    for line in board.lines():
+        if line is not None:
+            print(line)
+            if line.startswith(prefixes):
+                return line
+        if time.time() > end:
+            return None
+
+
+def send(path):
+    name = program_name(path)
+    data = tokenize(open(path).read())
+    board = tape.Board("/dev/ttyUSB0", 115200)
+    board.send(b"TLOAD|\n")
+    if wait_for(board, ("Trap: load",), 4):
+        board.send(b"p")
+        if wait_for(board, ("File: want",), 3):
+            image = header_of(TYPE_PROGRAM, name, data) + data
+            board.send(b"F%d\n" % len(image))
+            for i in range(0, len(image), 64):
+                board.send(image[i:i + 64].hex().encode() + b"\n")
+            if wait_for(board, ("File: loaded", "File: does not"), 5) == "File: loaded":
+                print('sent "%s" (%d bytes)' % (name, len(data)))
+                return
+        sys.exit("the board did not take it")
+    # no trap: as a tape
+    temp = "/tmp/fbasic-send.ftap" if os.path.isdir("/tmp") else "fbasic-send.ftap"
+    open(temp, "wb").write(tape_of([(TYPE_PROGRAM, name, data)]))
+    board.put(temp)
+    board.send(b"P")
+    print('playing "%s"; the board says when the tape ends' % name)
+    board.echo()
+
+
+def receive(path, given=None):
+    name = program_name(path, given)
+    board = tape.Board("/dev/ttyUSB0", 115200)
+    board.send(b'TSAVE "%s"|\n' % name.encode("latin-1"))
+    if wait_for(board, ("Trap: save",), 6):
+        board.send(b"p")
+        data = bytearray()
+        for line in board.lines():
+            if line is None:
+                continue
+            if line.startswith("File: data "):
+                data += bytes.fromhex(line[11:])
+            elif line.startswith("File: end "):
+                break
+        temp = "/tmp/fbasic-receive.bin" if os.path.isdir("/tmp") else "fbasic-receive.bin"
+        open(temp, "wb").write(data)
+        return main(["export", temp, path])
+    # no trap: BASIC is writing to the tape; it is recorded until Enter
+    sys.exit("no tape trap on the board: record with tools/tape.py record instead, then export")
+
+
 def main(args):
     if len(args) == 2 and args[0] == "list":
-        for header, data in files_of(open(args[1], "rb").read()):
+        for header, data in read_files(args[1]):
             print('"%s": type %d, %d bytes' % (header["name"], header["type"], header["size"]))
             if header["type"] == TYPE_PROGRAM:
                 print("\n".join(detokenize(data)))
         return
     if len(args) == 3 and args[0] == "export":
-        programs = [(h, d) for h, d in files_of(open(args[1], "rb").read()) if h["type"] == TYPE_PROGRAM]
+        programs = [(h, d) for h, d in read_files(args[1]) if h["type"] == TYPE_PROGRAM]
         if not programs:
-            sys.exit("no program on %s" % args[1])
+            sys.exit("no program in %s" % args[1])
         h, d = programs[0]
         open(args[2], "w").write("\n".join(detokenize(d)) + "\n")
         print('wrote %s: "%s", %d bytes' % (args[2], h["name"], h["size"]))
         return
     if len(args) in (3, 4) and args[0] == "import":
-        name = args[3] if len(args) == 4 else os.path.splitext(os.path.basename(args[1]))[0].upper()
+        name = program_name(args[1], args[3] if len(args) == 4 else None)
         data = tokenize(open(args[1]).read())
-        open(args[2], "wb").write(tape_of([(TYPE_PROGRAM, name, data)]))
+        if args[2].endswith(".ftap"):
+            open(args[2], "wb").write(tape_of([(TYPE_PROGRAM, name, data)]))
+        else:
+            open(args[2], "wb").write(header_of(TYPE_PROGRAM, name, data) + data)
         print('wrote %s: "%s", %d bytes of program' % (args[2], name, len(data)))
         return
     if len(args) == 2 and args[0] == "send":
-        name = os.path.splitext(os.path.basename(args[1]))[0].upper()
-        image = tape_of([(TYPE_PROGRAM, name, tokenize(open(args[1]).read()))])
-        temp = "/tmp/fbasic-send.ftap" if os.path.isdir("/tmp") else "fbasic-send.ftap"
-        open(temp, "wb").write(image)
-        board = tape.Board("/dev/ttyUSB0", 115200)
-        board.put(temp)
-        board.send(b"TLOAD|\n")
-        time.sleep(1.5)
-        board.send(b"P")
-        print('playing "%s"; the board says when the tape ends' % name)
-        board.echo()
-        return
+        return send(args[1])
     if len(args) in (2, 3) and args[0] == "receive":
-        name = args[2] if len(args) == 3 else os.path.splitext(os.path.basename(args[1]))[0].upper()
-        board = tape.Board("/dev/ttyUSB0", 115200)
-        board.send(b"R")
-        time.sleep(0.3)
-        board.send(b'TSAVE "%s"|\n' % name.encode("latin-1"))
-        print("saving; press Enter when BASIC says OK")
-        temp = "/tmp/fbasic-receive.ftap" if os.path.isdir("/tmp") else "fbasic-receive.ftap"
-        board.take(temp, stop_on_enter=True)
-        return main(["export", temp, args[1]])
+        return receive(args[1], args[2] if len(args) == 3 else None)
     sys.exit(__doc__)
 
 

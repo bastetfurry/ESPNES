@@ -146,7 +146,7 @@ public:
   int  cheatCount() const                     { return m_cheatCount; }
 
   // --- ROM patches: Game Genie style, but always on (not cheats), e.g. the tape traps' stubs ---
-  static constexpr int MAX_PATCHES = 32;
+  static constexpr int MAX_PATCHES = 48;
   void setRomPatches(Cheat const * list, int count);
 
   // --- the Wii Virtual Console's call ---
@@ -157,6 +157,14 @@ public:
   void     enableVcCall(bool on)              { m_vcCallOn = on; m_vcCall = 0; }
   uint16_t vcCall() const                     { return m_vcCall; }
   void     finishVcCall()                     { prgRam[0] = prgRam[1]; m_vcCall = 0; }
+
+  // --- ESPNES's own call, for patched games whose RAM at $6000 is in use (Family BASIC) ---
+  // The game writes an operation (1-255) to $4018 (the APU's unused test range) and waits while
+  // $4018 reads $80; finishPortCall(result) makes it read the result (below $80). While enabled,
+  // portCall() gives the waiting operation, 0 for none. Between frames.
+  void     enablePortCall(bool on)            { m_portOn = on; m_portCall = 0; m_portResult = 0; }
+  uint8_t  portCall() const                   { return m_portCall; }
+  void     finishPortCall(uint8_t result)     { m_portResult = result & 0x7f; m_portCall = 0; }
 
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }
@@ -242,6 +250,9 @@ private:
   int             m_patchCount = 0;
   bool            m_vcCallOn = false;
   uint16_t        m_vcCall = 0;
+  bool            m_portOn = false;
+  uint8_t         m_portCall = 0;
+  uint8_t         m_portResult = 0;
   bool            patches(Cheat const & c, uint16_t base, uint8_t const * page) const
   {
     return c.rom && (uint16_t)(c.addr - base) < 0x2000 && (c.compare < 0 || page[c.addr - base] == c.compare);

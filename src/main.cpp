@@ -2157,6 +2157,7 @@ static char const * loadSlot(RomBlob const & rom, int slot)
 enum class TrapOp { NONE, SAVE, LOAD, WAIT_PC };
 static TrapOp         s_trapOp = TrapOp::NONE;
 static RomBlob const * s_trapRom;              // the game in the console (loadRom)
+static std::vector<uint8_t> s_trapFile;        // Family BASIC: the file being saved or loaded
 
 
 // Returns nullptr or an error message.
@@ -2185,7 +2186,9 @@ static char const * loadRom(RomBlob const & rom)
     for (int i = 0; i < t->patchCount && patchCount < Nes::MAX_PATCHES; ++i)
       patches[patchCount++] = { true, t->patches[i].addr, t->patches[i].value, t->patches[i].original };
   nes.setRomPatches(patches, patchCount);
-  nes.enableVcCall(rom.tapeTrap != nullptr);
+  nes.enableVcCall(rom.tapeTrap && rom.tapeTrap->kind == TRAP_VC);
+  nes.enablePortCall(rom.tapeTrap && rom.tapeTrap->kind == TRAP_FBASIC);
+  s_trapFile.clear();
   nes.powerOn();
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
@@ -2358,14 +2361,18 @@ static void receiveTape()
 ///////////////////////////////////////////////////////////////////////////////
 // Tape traps (see TapeTrap in romindex.h, tools/tapetrap.py)
 //
-// A game with a tape trap (Mach Rider) saves and loads its data in memory, without a tape. When it
-// calls, a line over the picture asks where: one of four slots in SPIFFS ("<rom>.tp1" to ".tp4")
-// or the PC (tools/tape.py file); the game waits meanwhile. Over serial:
+// A game with a tape trap (Mach Rider, Family BASIC) saves and loads its data in memory, without a
+// tape. When it saves or loads, a line over the picture asks where: one of four slots in SPIFFS
+// ("<rom>.tp1" to ".tp4") or the PC (tools/tape.py file, tools/fbasic.py); the game waits
+// meanwhile. Mach Rider's file is its course; Family BASIC's is a tape file: the 128 byte header
+// and the data. Over serial:
 //   File: data <hex, 64 bytes per line>   (as many lines as needed)
 //   File: end <size> <game>               a save, done
-//   File: want <size> <game>              a load: 'F', the size, a newline and the hex answer it
+//   File: want <size> <game>              a load (size 0: any): 'F', the size, a newline and the
+//                                         hex answer it
 
-static int            s_trapMessage;           // frames left for a message before the question
+static int                  s_trapMessage;     // frames left for a message before the question
+static constexpr size_t     FBASIC_MAX_FILE = 128 + 0x2000;
 
 static size_t trapSize(TapeTrap const & t)
 {
@@ -2390,6 +2397,57 @@ static String trapPath(int slot)
 }
 
 
+// a Family BASIC header's 16 bit field
+static unsigned headerField(std::vector<uint8_t> const & file, int at)
+{
+  return file[at] | file[at + 1] << 8;
+}
+
+
+// BASIC's tape loop leaves its pointer ($AD/$AE) at the end of what it read, and LOAD takes that
+// as the program's end; the end it reads to is $AF/$B0
+static void fbasicPointers(uint16_t end)
+{
+  nes.ram[0xad] = nes.ram[0xaf] = end & 0xff;
+  nes.ram[0xae] = nes.ram[0xb0] = end >> 8;
+}
+
+
+// what a save hands over
+static std::vector<uint8_t> trapSaveData(TapeTrap const & t)
+{
+  if (t.kind == TRAP_FBASIC)
+    return s_trapFile;
+  std::vector<uint8_t> data;
+  for (int i = 0; i < t.blockCount; ++i)
+    for (int k = 0; k < t.blocks[i].size; ++k)
+      data.push_back(trapByte(t.blocks[i].addr + k));
+  return data;
+}
+
+
+// what a load takes: false if it does not fit the game
+static bool trapLoadData(TapeTrap const & t, std::vector<uint8_t> const & data)
+{
+  if (t.kind == TRAP_FBASIC) {
+    if (data.size() < 128 || data.size() > FBASIC_MAX_FILE || data.size() < 128 + headerField(data, 18))
+      return false;
+    s_trapFile = data;
+    for (int k = 0; k < 128; ++k)              // the header now, the data when BASIC asks for it
+      trapByte(t.blocks[0].addr + k) = data[k];
+    fbasicPointers(t.blocks[0].addr + 128);
+    return true;
+  }
+  if (data.size() != trapSize(t))
+    return false;
+  size_t n = 0;
+  for (int i = 0; i < t.blockCount; ++i)
+    for (int k = 0; k < t.blocks[i].size; ++k)
+      trapByte(t.blocks[i].addr + k) = data[n++];
+  return true;
+}
+
+
 static void trapMessage(char const * text)
 {
   showOverlay(text);
@@ -2398,15 +2456,26 @@ static void trapMessage(char const * text)
 }
 
 
-static void trapDone(char const * text)
+static void trapDone(char const * text, bool ok)
 {
   trapMessage(text);
   s_trapOp = TrapOp::NONE;
-  nes.finishVcCall();
+  if (s_trapRom->tapeTrap->kind == TRAP_FBASIC)
+    nes.finishPortCall(ok ? 0 : 2);            // BASIC's routines: carry set when it failed
+  else
+    nes.finishVcCall();
 }
 
 
-// the game called: which call it is
+static void trapAsk(TrapOp op)
+{
+  s_trapOp = op;
+  s_trapMessage = 0;
+  Serial.printf("Trap: %s, 1-4 or p(c), ~ cancels\n", op == TrapOp::SAVE ? "save" : "load");
+}
+
+
+// Mach Rider (the VC's call): which call it is
 static void trapStart(uint16_t call)
 {
   TapeTrap const * t = s_trapRom ? s_trapRom->tapeTrap : nullptr;
@@ -2415,9 +2484,58 @@ static void trapStart(uint16_t call)
     nes.finishVcCall();
     return;
   }
-  s_trapOp = call == t->saveCall ? TrapOp::SAVE : TrapOp::LOAD;
-  s_trapMessage = 0;
-  Serial.printf("Trap: %s, 1-4 or p(c), ~ cancels\n", s_trapOp == TrapOp::SAVE ? "save" : "load");
+  trapAsk(call == t->saveCall ? TrapOp::SAVE : TrapOp::LOAD);
+}
+
+
+// Family BASIC's tape routines: the header and the data, each on its own call
+static void trapPortCall(uint8_t op)
+{
+  TapeTrap const & t = *s_trapRom->tapeTrap;
+  uint16_t header = t.blocks[0].addr;
+  switch (op) {
+    case CALL_WRITE_HEADER:                    // kept until the data comes
+      s_trapFile.assign(128, 0);
+      for (int k = 0; k < 128; ++k)
+        s_trapFile[k] = trapByte(header + k);
+      nes.finishPortCall(0);
+      return;
+    case CALL_WRITE_DATA: {
+      if (s_trapFile.size() < 128) {
+        nes.finishPortCall(2);
+        return;
+      }
+      unsigned size = headerField(s_trapFile, 18), at = headerField(s_trapFile, 20);
+      s_trapFile.resize(128);
+      for (unsigned k = 0; k < size && s_trapFile.size() < FBASIC_MAX_FILE; ++k)
+        s_trapFile.push_back(trapByte(at + k));
+      trapAsk(TrapOp::SAVE);
+      return;
+    }
+    case CALL_READ_HEADER:
+      trapAsk(TrapOp::LOAD);           // the header goes to $0500 when one is chosen (trapLoadData)
+      return;
+    case CALL_READ_DATA:
+    case CALL_VERIFY_DATA: {
+      bool ok = s_trapFile.size() >= 128 && s_trapFile.size() >= 128 + headerField(s_trapFile, 18);
+      unsigned size = ok ? headerField(s_trapFile, 18) : 0, at = ok ? headerField(s_trapFile, 20) : 0;
+      // into RAM or save RAM only
+      ok &= (at + size <= 0x800) || (at >= 0x6000 && at + size <= 0x8000);
+      for (unsigned k = 0; ok && k < size; ++k) {
+        if (op == CALL_READ_DATA)
+          trapByte(at + k) = s_trapFile[128 + k];
+        else
+          ok = trapByte(at + k) == s_trapFile[128 + k];
+      }
+      if (ok)
+        fbasicPointers(at + size);
+      nes.finishPortCall(ok ? 0 : 2);
+      return;
+    }
+    default:
+      Serial.printf("Trap: unknown call %d\n", op);
+      nes.finishPortCall(2);
+  }
 }
 
 
@@ -2440,7 +2558,7 @@ static void trapKey(int c)
   bool save = s_trapOp == TrapOp::SAVE;
   char text[24];
   if (c == 27) {
-    trapDone(save ? "NOT SAVED" : "NOT LOADED");
+    trapDone(save ? "NOT SAVED" : "NOT LOADED", false);
     return;
   }
   if (s_trapOp == TrapOp::WAIT_PC)
@@ -2453,40 +2571,38 @@ static void trapKey(int c)
       trapMessage(text);
       return;
     }
-    if (!save && f.size() != trapSize(t)) {
+    if (save) {
+      std::vector<uint8_t> data = trapSaveData(t);
+      bool ok = f.write(data.data(), data.size()) == data.size();
+      snprintf(text, sizeof(text), ok ? "SAVED TO SLOT %d" : "SLOT %d FAILED", slot);
+      trapDone(text, ok);
+      return;
+    }
+    std::vector<uint8_t> data(f.size());
+    if (f.read(data.data(), data.size()) != data.size() || !trapLoadData(t, data)) {
       snprintf(text, sizeof(text), "SLOT %d IS BROKEN", slot);
       trapMessage(text);
       return;
     }
-    bool ok = true;
-    for (int i = 0; i < t.blockCount; ++i)
-      for (int k = 0; k < t.blocks[i].size; ++k) {
-        uint8_t & b = trapByte(t.blocks[i].addr + k);
-        ok &= save ? f.write(&b, 1) == 1 : f.read(&b, 1) == 1;
-      }
-    snprintf(text, sizeof(text), !ok ? "SLOT %d FAILED" : save ? "SAVED TO SLOT %d" : "LOADED SLOT %d", slot);
-    trapDone(text);
+    snprintf(text, sizeof(text), "LOADED SLOT %d", slot);
+    trapDone(text, true);
     return;
   }
   if (c == 'p' && save) {
+    std::vector<uint8_t> data = trapSaveData(t);
     char line[2 * 64 + 1];
-    int n = 0;
-    for (int i = 0; i < t.blockCount; ++i)
-      for (int k = 0; k < t.blocks[i].size; ++k) {
-        snprintf(line + 2 * n, 3, "%02x", trapByte(t.blocks[i].addr + k));
-        if (++n == 64) {
-          Serial.printf("File: data %s\n", line);
-          n = 0;
-        }
-      }
-    if (n)
+    for (size_t i = 0; i < data.size(); i += 64) {
+      size_t n = std::min<size_t>(64, data.size() - i);
+      for (size_t k = 0; k < n; ++k)
+        snprintf(line + 2 * k, 3, "%02x", data[i + k]);
       Serial.printf("File: data %s\n", line);
-    Serial.printf("File: end %u %s\n", (unsigned) trapSize(t), t.game);
-    trapDone("SENT TO PC");
+    }
+    Serial.printf("File: end %u %s\n", (unsigned) data.size(), t.game);
+    trapDone("SENT TO PC", true);
     return;
   }
   if (c == 'p') {
-    Serial.printf("File: want %u %s\n", (unsigned) trapSize(t), t.game);
+    Serial.printf("File: want %u %s\n", t.kind == TRAP_FBASIC ? 0u : (unsigned) trapSize(t), t.game);
     s_trapOp = TrapOp::WAIT_PC;
     s_trapMessage = 0;
   }
@@ -2498,18 +2614,15 @@ static void receiveTrapFile()
 {
   TapeTrap const & t = *s_trapRom->tapeTrap;
   long size = Serial.parseInt();
-  std::vector<uint8_t> data(size > 0 && size <= 4096 ? size : 0);
-  if (size != (long) trapSize(t) || !readHex(data.data(), size)) {
-    Serial.printf("File: expected %u bytes\n", (unsigned) trapSize(t));
+  size_t most = t.kind == TRAP_FBASIC ? FBASIC_MAX_FILE : trapSize(t);
+  std::vector<uint8_t> data(size > 0 && (size_t) size <= most ? size : 0);
+  if (data.empty() || !readHex(data.data(), size) || !trapLoadData(t, data)) {
+    Serial.printf("File: does not fit (%ld bytes)\n", size);
     trapMessage("BAD FILE FROM PC");
     return;
   }
-  size_t n = 0;
-  for (int i = 0; i < t.blockCount; ++i)
-    for (int k = 0; k < t.blocks[i].size; ++k)
-      trapByte(t.blocks[i].addr + k) = data[n++];
   Serial.println("File: loaded");
-  trapDone("LOADED FROM PC");
+  trapDone("LOADED FROM PC", true);
 }
 
 
@@ -2796,6 +2909,8 @@ static void runGame()
     if (s_trapOp == TrapOp::NONE) {
       if (uint16_t call = nes.vcCall())
         trapStart(call);
+      else if (uint8_t op = nes.portCall())
+        trapPortCall(op);
     }
     if (s_trapOp != TrapOp::NONE)
       trapPrompt();

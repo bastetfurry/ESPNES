@@ -242,9 +242,9 @@ for i, g in enumerate(games):
         if trap:
             blocks = ", ".join("{ 0x%04x, 0x%x }" % b for b in trap["blocks"])
             patches = ", ".join("{ 0x%04x, 0x%02x, 0x%02x }" % p for p in trap["patches"])
-            cpp.append("static const TapeTrap trap_%d = { %s, 0x%04x, 0x%04x, %d, { %s }, %d, { %s } };"
-                       % (i, cString(trap["game"]), trap["save"], trap["load"], len(trap["blocks"]), blocks,
-                          len(trap["patches"]), patches))
+            cpp.append("static const TapeTrap trap_%d = { %s, %s, 0x%04x, 0x%04x, %d, { %s }, %d, { %s } };"
+                       % (i, cString(trap["game"]), "TRAP_FBASIC" if trap["kind"] == "fbasic" else "TRAP_VC",
+                          trap["save"], trap["load"], len(trap["blocks"]), blocks, len(trap["patches"]), patches))
             trapRef = "&trap_%d" % i
             print("embed_roms: %s: tape trap for %s (%s)" % (g["file"], trap["game"], trap["kind"]))
         elif tapeOption:

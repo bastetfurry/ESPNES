@@ -93,6 +93,12 @@ place on the keyboard, so a layout change does not move them.
 
 ### Family BASIC keyboard
 
+(For 8 KB instead of 4 KB in V3.0, an emulator-only patch: the Game Genie codes `YNXAGVYV`
+(top of memory `$6FFF` → `$7FFF`), `EESOAYAY` and `EEKXOIAY` (the bounds check and the memory
+move, `$7000` → `$8000`). That gives 8182 bytes free. All three are needed. A real cartridge has
+4 KB, so this only works in an emulator.)
+
+
 Games with "BASIC" in the file name, or `keyboard=yes` in their options, get the Family BASIC
 keyboard: the PC keyboard becomes the Famicom's (`$4016` writes select the row and column,
 `$4017` bits 1-4 read the keys, see `src/nes/famikey.h`). Letters, digits and symbols type what
@@ -115,17 +121,20 @@ Use Family BASIC V3.0, which has 4 KB for programs (4086 bytes free). V2.x has 2
 go to the Data Recorder: press record (or play) in the system menu, then type SAVE "NAME" (or
 LOAD). `host/nestool run ... type=F:TEXT` types on the keyboard from frame F (`\n` is RETURN).
 
-Programs move between the board and the PC as text listings with `tools/fbasic.py`. It decodes
-Family BASIC's tape format (Sharp MZ: a header block with type, name and size, then the program
-as it is in memory at `$6006`) and turns the tokens into text, or text back into tokens and a
-tape. The tapes it writes have one-second leaders instead of nine, so a short program loads in
-a few seconds:
+Family BASIC has a tape trap like Mach Rider's (see Tape traps): SAVE and LOAD ask for a slot
+(1-4) or the PC and take no time. Programs move between the board and the PC as text listings
+with `tools/fbasic.py`. It reads tapes (Family BASIC's format is the Sharp MZ one: a header block
+with type, name and size, then the program as it is in memory at `$6006`) and trap files (the
+same header and data), and turns the tokens into text, or text back into tokens:
 
-    python3 tools/fbasic.py send prog.bas          puts it in, types LOAD and plays it
-    python3 tools/fbasic.py receive prog.bas NAME  types SAVE "NAME", records; Enter when OK shows
-    python3 tools/fbasic.py list tape.ftap         the files on a tape, programs as listings
-    python3 tools/fbasic.py export tape.ftap prog.bas
-    python3 tools/fbasic.py import prog.bas tape.ftap [NAME]
+    python3 tools/fbasic.py send prog.bas          types LOAD and hands BASIC the program (1 s)
+    python3 tools/fbasic.py receive prog.bas NAME  types SAVE "NAME" and writes the listing
+    python3 tools/fbasic.py list FILE              the files in a tape or trap file, as listings
+    python3 tools/fbasic.py export FILE prog.bas
+    python3 tools/fbasic.py import prog.bas OUT [NAME]   a tape if OUT ends in .ftap, else a trap file
+
+Without the trap (`tape=none`), `send` falls back to a tape with one-second leaders instead of
+nine.
 
 Everything a program needs is in the listing: music is PLAY strings, and sprites are the fixed
 character sets (CGSET, DEF SPRITE). Screens made with BGTOOL are saved as files of their own
@@ -294,6 +303,14 @@ loads (`Nes::vcCall`). The call's return address tells a save from a load. For t
 at it. Both kinds are recognized from their code at build time, so translations and hacks work
 too. `tape=machrider` in the options insists on a trap, with a warning if the routines are not
 found, and `tape=none` turns it off to use the real tape.
+
+Family BASIC (V2.0a, V2.1a, V3.0 and the Playbox BASIC prototype) keeps its own data at
+`$6000`, so it can't use the VC's call. Its five tape routines (write header, write data, read
+header, read data, verify) are patched to `lda #OP / jmp STUB`. The stub writes the operation to
+`$4018` (the APU's unused test range) and waits while `$4018` reads `$80` (`Nes::portCall`). The
+file is BASIC's own: the 128-byte header at `$0500` and the data from its load address, so
+BGTOOL screens go the same way as programs. With the three Game Genie codes below, BASIC V3
+uses all 8 KB, and programs of more than 4 KB go through the trap too.
 
 When the game saves or loads, a line over the picture asks where: 1-4 picks a slot in SPIFFS
 (`.tp1` to `.tp4`, listed in the file manager), P picks the PC, and Esc cancels. Over serial, the

@@ -6,16 +6,25 @@
 #include <stddef.h>
 
 // A game whose Data Recorder saves and loads are done in memory, without a tape
-// (tools/tapetrap.py): it calls a stub that writes $96 to $6000 and $C3 to $6001 and waits until
-// they are equal, the Wii Virtual Console's mechanism (Nes::vcCall); cart versions get that stub
-// as ROM patches. The call's return address tells a save from a load.
+// (tools/tapetrap.py), in one of two ways:
+//   TRAP_VC      it calls a stub that writes $96 to $6000 and $C3 to $6001 and waits until they
+//                are equal, the Wii Virtual Console's mechanism (Nes::vcCall); cart versions get
+//                that stub as ROM patches. The call's return address tells a save from a load; the
+//                data is 'blocks' (Mach Rider: its course).
+//   TRAP_FBASIC  Family BASIC's five tape routines are patched to call ESPNES (Nes::portCall,
+//                $4018) with an operation (TrapCall); the header is the 128 bytes at blocks[0],
+//                the data follows from its load address (header bytes 20-21) for its size (18-19).
+enum : uint8_t { TRAP_VC, TRAP_FBASIC };
+enum TrapCall : uint8_t { CALL_WRITE_HEADER = 1, CALL_WRITE_DATA, CALL_READ_HEADER, CALL_READ_DATA, CALL_VERIFY_DATA };
+
 struct TapeTrap {
   char const * game;                    // which game's data, e.g. "machrider"
-  uint16_t     saveCall, loadCall;      // the return addresses the save's and the load's JSR push
+  uint8_t      kind;                    // TRAP_VC, TRAP_FBASIC
+  uint16_t     saveCall, loadCall;      // TRAP_VC: the return addresses the save's and the load's JSR push
   uint8_t      blockCount;
   struct { uint16_t addr, size; } blocks[4];   // in CPU RAM ($0000-$07FF) or save RAM ($6000-)
   uint8_t      patchCount;
-  struct { uint16_t addr; uint8_t value, original; } patches[24];
+  struct { uint16_t addr; uint8_t value, original; } patches[48];
 };
 
 struct RomBlob {

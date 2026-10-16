@@ -72,6 +72,8 @@ void Nes::eject()
   m_cheatsOn = m_romPatched = false;
   m_vcCallOn = false;
   m_vcCall = 0;
+  m_portOn = false;
+  m_portCall = 0;
   delete m_mapper;
   m_mapper = nullptr;
   free(prgRam);
@@ -376,6 +378,10 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
       // are open bus; bits 1-4 read 0 without anything on the expansion port
       return bus = (bus & 0xe0) | bit;
     }
+    case 0x4018:
+      if (m_portOn)
+        return bus = m_portCall ? 0x80 : m_portResult;
+      return bus;
     default:
       if (addr >= 0x4020) {
         int r = m_mapper->readLow(addr);
@@ -458,6 +464,8 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   if (addr < 0x4018) {
     apu.run(cpu.cycles);
     apu.write(addr, value);
+  } else if (addr == 0x4018 && m_portOn && value) {
+    m_portCall = value;
   }
 }
 

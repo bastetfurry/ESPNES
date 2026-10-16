@@ -11,6 +11,13 @@ Detected in the code, not by CRC, so translations and hacks are found too:
     Mach Rider   the save's call site: lda #$03 / sta $0604 / jsr SAVE / jmp MENU, the load's:
                  the other jsr LOAD / jmp MENU. The course is $0600-$063F and $0700-$07FF.
 
+    Family BASIC (V2.0a, V2.1a, V3.0, Playbox BASIC) keeps its own data at $6000, so it calls
+                 ESPNES through $4018 instead (Nes::portCall): its five tape routines (write
+                 header, write data, read header, read data, verify data) become lda #OP /
+                 jmp STUB, and the stub, over the bit writer that follows "write data",
+                 is sta $4018 / wait: lda $4018 / bmi wait / cmp #1 / rts (carry set: failed, as
+                 the routines return). Header at $0500 (128 bytes), data from its load address.
+
     python3 tools/tapetrap.py ROM.nes      what is found (and the host harness's trap= line)
 """
 
@@ -21,7 +28,7 @@ import sys
 STUB = bytes.fromhex("a9968d0060a9c38d0160ad0060cd0160d0f860")
 VC_STUB = bytes.fromhex("a9968d0060a9c38d0160")
 
-GAMES = ("machrider",)
+GAMES = ("machrider", "fbasic")
 
 
 def prg_of(image):
@@ -70,6 +77,35 @@ def machrider(prg):
     return trap
 
 
+def fbasic(prg):
+    if len(prg) != 32768:
+        return None
+    def one(pattern):
+        found = list(re.finditer(pattern, prg, re.S))
+        return 0x8000 + found[0].start() if len(found) == 1 else None
+    writeHeader = one(rb"\x20..\x20..\xa9\x28\x85\x91\xa9\x00\x85\x92\x4c")
+    writeData = one(rb"\x20..\x20..\xa9\x14\x85\x91\xa9\x00\x85\x92")
+    readHeader = one(rb"\x20..\xa9\x00\x85\xb1\x20..\xa9\x28\x85\x91")
+    verify = one(rb"\x20..\xa9\x01\x4c..\x20..\xa9\x00\x85\xb1\xa9\x00\x85\x92\x20..\xa9\x14\x85\x91")
+    buffer = re.search(rb"\xa9\x00\x85\xad\xa9\x05\x85\xae\xa9\x80\x85\xaf\xa9\x05\x85\xb0", prg)
+    fields = re.search(rb"\xad\x14\x05\x85\xad\x18\x6d\x12\x05", prg)
+    if None in (writeHeader, writeData, readHeader, verify) or not buffer or not fields:
+        return None
+    stub = writeData + 14                         # the bit writer after "write data": dead now
+    code = {}
+    for entry, op in ((writeHeader, 1), (writeData, 2), (readHeader, 3), (verify + 8, 4), (verify, 5)):
+        for i, b in enumerate((0xa9, op, 0x4c, stub & 0xff, stub >> 8)):
+            code[entry + i] = b
+    # sta $4018 / wait: lda $4018 / bmi wait / cmp #1 / rts
+    for i, b in enumerate(bytes.fromhex("8d1840ad184030fbc90160")):
+        code[stub + i] = b
+    return {
+        "game": "fbasic", "kind": "fbasic", "save": 0, "load": 0,
+        "blocks": [(0x0500, 0x80)],
+        "patches": [(a, v, prg[a - 0x8000]) for a, v in sorted(code.items())],
+    }
+
+
 def find(image, game=None):
     """The trap for a ROM image: a dict (game, kind, save, load, blocks, patches as (address,
     value, original)) or None. game: look only for that one ("machrider"), None: for all."""
@@ -97,6 +133,9 @@ if __name__ == "__main__":
     trap = find(open(sys.argv[1], "rb").read())
     if not trap:
         sys.exit("no tape trap for %s" % sys.argv[1])
-    print("%s (%s): save call returns to $%04X, load call to $%04X, %d patched bytes"
-          % (trap["game"], trap["kind"], trap["save"], trap["load"], len(trap["patches"])))
+    if trap["kind"] == "fbasic":
+        print("%s: tape routines call ESPNES through $4018, %d patched bytes" % (trap["game"], len(trap["patches"])))
+    else:
+        print("%s (%s): save call returns to $%04X, load call to $%04X, %d patched bytes"
+              % (trap["game"], trap["kind"], trap["save"], trap["load"], len(trap["patches"])))
     print("trap=" + host_line(trap))

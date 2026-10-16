@@ -234,6 +234,7 @@ void Apu::reset(Region region)
   vrc6.reset();
   s5b.reset();
   n163.reset();
+  vrc7.reset();
   memset(m_mmc5Pulse, 0, sizeof(m_mmc5Pulse));
   for (auto & p : m_mmc5Pulse) {
     p.timer = 2;
@@ -344,6 +345,8 @@ NES_HOT void Apu::advance(int32_t n)
     s5b.advance(n);
   if (NES_UNLIKELY(n163On))
     n163.advance(n);
+  if (NES_UNLIKELY(vrc7On))
+    vrc7.advance(n);
   if (NES_UNLIKELY(mmc5On)) {
     m_mmc5Pulse[0].advance(n);
     m_mmc5Pulse[1].advance(n);
@@ -386,6 +389,12 @@ NES_HOT void Apu::emitSample()
     if (n163On)
       for (int i = 0; i < 8; ++i)
         meter(METER_N163 + i, n163.level[7 - i] / cycles);
+    if (vrc7On)
+      for (int i = 0; i < 6; ++i) {
+        // no wave to measure: the envelope's level, as a swing from 0
+        meter(METER_VRC7 + i, 0);
+        meter(METER_VRC7 + i, vrc7.channelLevel(i));
+      }
     if (mmc5On) {
       meter(METER_MMC5_1, m_mmc5Pulse[0].acc / cycles);
       meter(METER_MMC5_2, m_mmc5Pulse[1].acc / cycles);
@@ -404,6 +413,11 @@ NES_HOT void Apu::emitSample()
     // its pulses about as loud as the 2A03's, the saw (0-31) on the same scale
     mix += (vrc6.acc[0] + vrc6.acc[1] + vrc6.acc[2]) * 752 / cycles;
     vrc6.acc[0] = vrc6.acc[1] = vrc6.acc[2] = 0;
+  }
+  if (NES_UNLIKELY(vrc7On)) {
+    // DBOPL's channel at full level reaches about 4000: about a 2A03 pulse at 15
+    mix += vrc7.acc * 3 / cycles;
+    vrc7.acc = 0;
   }
   if (NES_UNLIKELY(n163On)) {
     // one channel at its loudest swings 225 (-120 to 105): about 12 dB above a 2A03 pulse

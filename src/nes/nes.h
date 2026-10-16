@@ -247,6 +247,7 @@ private:
   bool       m_mmc5Audio = false; // $5000-$5015 are the MMC5 sound's
   bool       m_s5bAudio = false;  // $C000/$E000 are (also) the 5B sound's
   bool       m_n163Audio = false; // $4800 and $F800 are the N163 sound's
+  bool       m_vrc7Audio = false; // $9010/$9030 are (also) the VRC7 sound's
   void       nsfCall(uint16_t addr);
   uint16_t   m_micNoise = 1;     // LFSR
   uint8_t    m_expOut = 0;       // the last $4016 write's bits 0-2 (the expansion port's outputs)

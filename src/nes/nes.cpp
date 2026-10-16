@@ -62,6 +62,11 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     m_mmc5Audio = m_nsfInfo.chips & NSF_MMC5;
     m_s5bAudio = m_nsfInfo.chips & NSF_5B;
     m_n163Audio = m_nsfInfo.chips & NSF_N163;
+    m_vrc7Audio = m_nsfInfo.chips & NSF_VRC7;
+    if (m_vrc7Audio && !apu.vrc7.start()) {
+      eject();
+      return "Out of memory";
+    }
     ppu.chrWritable = true;
     memset(prgRam, 0, 0x2000);
     setRegion(m_cart.info.region);
@@ -107,6 +112,9 @@ void Nes::eject()
   m_mmc5Audio = false;
   m_s5bAudio = false;
   m_n163Audio = false;
+  m_vrc7Audio = false;
+  apu.vrc7.stop();
+  apu.vrc7On = false;
   m_portOn = false;
   m_portCall = 0;
   delete m_mapper;
@@ -466,6 +474,13 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
         apu.vrc6.write(a, value);
       }
     }
+    if (NES_UNLIKELY(m_vrc7Audio) && (addr == 0x9010 || addr == 0x9030)) {
+      apu.run(cpu.cycles);
+      if (addr == 0x9010)
+        apu.vrc7.select(value);
+      else
+        apu.vrc7.write(value);
+    }
     if (NES_UNLIKELY(m_n163Audio) && addr >= 0xf800) {
       apu.run(cpu.cycles);
       apu.n163.setAddress(value);
@@ -645,6 +660,7 @@ void Nes::nsfStart(int song)
   apu.mmc5On = m_mmc5Audio;
   apu.s5bOn = m_s5bAudio;
   apu.n163On = m_n163Audio;
+  apu.vrc7On = m_vrc7Audio;
   // the APU as an NSF expects it
   for (uint16_t a = 0x4000; a < 0x4014; ++a)
     write(a, 0);

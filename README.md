@@ -269,7 +269,8 @@ No commercial ROMs are included. Two that can be had legally:
 NSF files (`roms/*.nsf`, listed in `settings.csv` like games) play as music: the screen shows the
 title, artist, copyright, the picture, a level bar per channel (pulse 1 and 2, triangle,
 noise, DMC, plus FDS, the VRC6's two pulses and saw, the MMC5's two pulses and PCM, the 5B's
-three channels, or the N163's eight when the music uses them: how far each
+three channels, the N163's eight, or the VRC7's six (their envelopes) when the music uses them:
+how far each
 one's output swings, falling back slowly),
 the song number and the play time. Left/Right on the pad
 (arrow keys, a real pad, or `l`/`r` over serial) changes the song, Start pauses, and SysRq opens
@@ -288,10 +289,12 @@ adds its multiplier and 1 KB ExRAM), Sunsoft's 5B (`src/nes/s5b_audio.*`: a YM21
 AY's speed, three square channels, noise and a 32-step envelope through a logarithmic DAC,
 written through `$C000`/`$E000`), Namco's 163 (`src/nes/n163_audio.*`: up to 8 wavetable channels
 in 128 bytes of sound RAM, `$F800` address, `$4800` data, updated one every 15 cycles in turn and
-mixed as the sum of their outputs divided by their number, about 12 dB above a 2A03 pulse), and
-the FDS's (`src/nes/fds_audio.*`). The FDS has a 64-step wavetable, the
+mixed as the sum of their outputs divided by their number, about 12 dB above a 2A03 pulse),
+Konami's VRC7 (`src/nes/vrc7_audio.*`: six FM channels; the OPLL inside is Yamaha's cut-down OPL2,
+so its writes are translated into an OPL2's, which DBOPL from DOSBox-X synthesizes at 24858 Hz,
+`src/nes/opl`, by way of ESPPC; GPL), and the FDS's (`src/nes/fds_audio.*`). The FDS has a 64-step wavetable, the
 pitch modulator, and the volume and modulation envelopes. It is mixed at up to 2.4 times a pulse
-channel and filtered at about 2 kHz like the real one. NSFs that need VRC7 are refused for now. `host/nestool run music.nsf FRAMES out.ppm wav=out.wav
+channel and filtered at about 2 kHz like the real one. All six expansion chips NSF music can ask for are there. `host/nestool run music.nsf FRAMES out.ppm wav=out.wav
 song=N` renders a song (`nofds` leaves the FDS out, for comparing).
 
 ## Data Recorder

@@ -3,7 +3,8 @@
 # roms/settings.csv lists the games in menu order, one per line:
 #   "file name.nes", "name shown in the menu", "picture.png", "manual.txt", options
 # (NSF music files, .nsf, are listed the same way.)
-# Lines starting with # are comments. Options are "key=value" pairs separated by ';' (see
+# Lines starting with # are comments; a game's line commented out leaves that game out of the build
+# (its file can stay in roms/). Options are "key=value" pairs separated by ';' (see
 # RomConfig in src/main.cpp: save, region, overclock). A ROM in roms/
 # that the CSV does not list is still built in, after the listed ones, named after its file.
 #
@@ -114,12 +115,19 @@ files = sorted((f for f in os.listdir(romDir) if f.lower().endswith((".nes", ".n
                key=str.lower)
 games = []           # dicts: file, name, picture, manual, options
 listed = set()
+commented = set()    # games whose line is commented out: left out, not listed at the end
 
 csvPath = os.path.join(romDir, "settings.csv")
 if os.path.exists(csvPath):
     with open(csvPath, newline="", encoding="utf-8") as f:
         for lineNo, row in enumerate(csv.reader(f, skipinitialspace=True), 1):
-            if not row or not "".join(row).strip() or row[0].lstrip().startswith("#"):
+            if not row or not "".join(row).strip():
+                continue
+            if row[0].lstrip().startswith("#"):
+                # a commented out game line keeps its game out of the build
+                name = row[0].lstrip().lstrip("#").strip().strip('"')
+                if name.lower().endswith((".nes", ".nsf")):
+                    commented.add(name)
                 continue
             row = [field.strip() for field in row]
             if len(row) < 2 or not row[0].lower().endswith((".nes", ".nsf")) or any('"' in field for field in row):
@@ -139,6 +147,9 @@ else:
     warn("no roms/settings.csv, listing the ROMs by file name")
 
 for name in files:
+    if name in commented and name not in listed:
+        print("embed_roms: %s is commented out in settings.csv, left out" % name)
+        continue
     if name not in listed:
         if os.path.exists(csvPath):
             warn("%s is not in settings.csv, listed at the end under its file name" % name)

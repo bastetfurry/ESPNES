@@ -12,6 +12,7 @@
 #include "fds_audio.h"
 #include "vrc6_audio.h"
 #include "s5b_audio.h"
+#include "n163_audio.h"
 
 class Nes;
 class StateIO;
@@ -65,6 +66,10 @@ public:
   S5bAudio s5b;
   bool     s5bOn = false;
 
+  // the Namco 163's sound, mixed in while n163On (Nes routes $4800 and $F800 to it)
+  N163Audio n163;
+  bool      n163On = false;
+
   // The MMC5's sound, mixed in while mmc5On (Nes routes $5000-$5015 to it): two pulse channels
   // as the 2A03's but without a sweep, whose envelopes and length counters the MMC5's own 240 Hz
   // counter clocks, and an 8 bit PCM level ($5011, written). $5015 enables the pulses.
@@ -74,10 +79,11 @@ public:
 
   // Level meters (while metersOn): how far each channel's output swung since the last call, per
   // sample: pulse 1, pulse 2, triangle, noise (0-15), DMC (0-127), FDS (0-63), VRC6 pulse 1 and 2
-  // (0-15), VRC6 saw (0-31), MMC5 pulse 1 and 2 (0-15), MMC5 PCM (0-255), 5B channels (0-255)
+  // (0-15), VRC6 saw (0-31), MMC5 pulse 1 and 2 (0-15), MMC5 PCM (0-255), 5B channels (0-255),
+  // N163 channels 8 down to 1 (0-225)
   enum { METER_PULSE1, METER_PULSE2, METER_TRIANGLE, METER_NOISE, METER_DMC, METER_FDS,
          METER_VRC6_1, METER_VRC6_2, METER_SAW, METER_MMC5_1, METER_MMC5_2, METER_PCM,
-         METER_5B_A, METER_5B_B, METER_5B_C, METERS };
+         METER_5B_A, METER_5B_B, METER_5B_C, METER_N163, METERS = METER_N163 + 8 };
   bool     metersOn = false;
   void     takeMeters(uint8_t out[METERS]);
 

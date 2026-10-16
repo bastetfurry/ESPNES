@@ -61,6 +61,7 @@ char const * Nes::insert(uint8_t const * image, size_t size)
     m_vrc6Audio = m_nsfInfo.chips & NSF_VRC6;
     m_mmc5Audio = m_nsfInfo.chips & NSF_MMC5;
     m_s5bAudio = m_nsfInfo.chips & NSF_5B;
+    m_n163Audio = m_nsfInfo.chips & NSF_N163;
     ppu.chrWritable = true;
     memset(prgRam, 0, 0x2000);
     setRegion(m_cart.info.region);
@@ -105,6 +106,7 @@ void Nes::eject()
   m_vrc6Audio = false;
   m_mmc5Audio = false;
   m_s5bAudio = false;
+  m_n163Audio = false;
   m_portOn = false;
   m_portCall = 0;
   delete m_mapper;
@@ -416,6 +418,10 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
         return bus = m_portCall ? 0x80 : m_portResult;
       return bus;
     default:
+      if (NES_UNLIKELY(m_n163Audio) && addr >= 0x4800 && addr < 0x5000) {
+        apu.run(cpu.cycles);
+        return bus = apu.n163.read();
+      }
       if (NES_UNLIKELY(m_mmc5Audio) && addr == 0x5015) {
         apu.run(cpu.cycles);
         return bus = (bus & ~3) | apu.readMmc5Status();
@@ -460,6 +466,10 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
         apu.vrc6.write(a, value);
       }
     }
+    if (NES_UNLIKELY(m_n163Audio) && addr >= 0xf800) {
+      apu.run(cpu.cycles);
+      apu.n163.setAddress(value);
+    }
     if (NES_UNLIKELY(m_s5bAudio) && addr >= 0xc000) {
       apu.run(cpu.cycles);
       if (addr < 0xe000)
@@ -482,6 +492,11 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
     if (NES_UNLIKELY(m_mmc5Audio) && addr >= 0x5000 && addr <= 0x5015) {
       apu.run(cpu.cycles);
       apu.writeMmc5(addr, value);
+      return;
+    }
+    if (NES_UNLIKELY(m_n163Audio) && addr >= 0x4800 && addr < 0x5000) {
+      apu.run(cpu.cycles);
+      apu.n163.write(value);
       return;
     }
     if (NES_UNLIKELY(m_fdsAudio) && addr >= 0x4040 && addr < 0x4098) {
@@ -629,6 +644,7 @@ void Nes::nsfStart(int song)
   apu.vrc6On = m_vrc6Audio;
   apu.mmc5On = m_mmc5Audio;
   apu.s5bOn = m_s5bAudio;
+  apu.n163On = m_n163Audio;
   // the APU as an NSF expects it
   for (uint16_t a = 0x4000; a < 0x4014; ++a)
     write(a, 0);

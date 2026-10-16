@@ -233,6 +233,7 @@ void Apu::reset(Region region)
   fds.reset();
   vrc6.reset();
   s5b.reset();
+  n163.reset();
   memset(m_mmc5Pulse, 0, sizeof(m_mmc5Pulse));
   for (auto & p : m_mmc5Pulse) {
     p.timer = 2;
@@ -341,6 +342,8 @@ NES_HOT void Apu::advance(int32_t n)
     vrc6.advance(n);
   if (NES_UNLIKELY(s5bOn))
     s5b.advance(n);
+  if (NES_UNLIKELY(n163On))
+    n163.advance(n);
   if (NES_UNLIKELY(mmc5On)) {
     m_mmc5Pulse[0].advance(n);
     m_mmc5Pulse[1].advance(n);
@@ -380,6 +383,9 @@ NES_HOT void Apu::emitSample()
     if (s5bOn)
       for (int i = 0; i < 3; ++i)
         meter(METER_5B_A + i, s5b.acc[i] / cycles);
+    if (n163On)
+      for (int i = 0; i < 8; ++i)
+        meter(METER_N163 + i, n163.level[7 - i] / cycles);
     if (mmc5On) {
       meter(METER_MMC5_1, m_mmc5Pulse[0].acc / cycles);
       meter(METER_MMC5_2, m_mmc5Pulse[1].acc / cycles);
@@ -398,6 +404,13 @@ NES_HOT void Apu::emitSample()
     // its pulses about as loud as the 2A03's, the saw (0-31) on the same scale
     mix += (vrc6.acc[0] + vrc6.acc[1] + vrc6.acc[2]) * 752 / cycles;
     vrc6.acc[0] = vrc6.acc[1] = vrc6.acc[2] = 0;
+  }
+  if (NES_UNLIKELY(n163On)) {
+    // one channel at its loudest swings 225 (-120 to 105): about 12 dB above a 2A03 pulse
+    mix += n163.acc * 200 / cycles;
+    n163.acc = 0;
+    for (auto & l : n163.level)
+      l = 0;
   }
   if (NES_UNLIKELY(s5bOn)) {
     // a channel at its loudest (255) about twice a 2A03 pulse at 15: the chip is loud, and its

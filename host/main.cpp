@@ -19,7 +19,9 @@
 //                                         end and runs the frames from F again: they must match;
 //                                         taperec=FILE@F starts the Data Recorder recording at
 //                                         frame F and writes the tape to FILE at the end;
-//                                         tapeplay=FILE@F plays the tape FILE from frame F
+//                                         tapeplay=FILE@F plays the tape FILE from frame F;
+//                                         trap=SPEC (from tools/tapetrap.py) traps the game's
+//                                         tape save/load: the data goes to/comes from trapfile=FILE
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
 
 #include <stdio.h>
@@ -196,6 +198,9 @@ static int run(int argc, char ** argv)
   Tape tape;
   char const * tapeRecPath = nullptr;
   int tapeRecAt = -1, tapePlayAt = -1;
+  unsigned trapSave = 0, trapLoad = 0;
+  std::vector<std::pair<int, int>> trapBlocks;
+  char const * trapPath = nullptr;
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
@@ -253,6 +258,33 @@ static int run(int argc, char ** argv)
       }
       nes.setTape(&tape);
     }
+    else if (!strncmp(argv[i], "trap=", 5)) {
+      // save,load;addr:size,...;addr:value:original,...
+      char const * p = argv[i] + 5;
+      int n = 0;
+      sscanf(p, "%x,%x%n", &trapSave, &trapLoad, &n);
+      p += n;
+      std::vector<Cheat> patches;
+      for (int part = 0; *p == ';'; ++part) {
+        ++p;
+        while (*p && *p != ';') {
+          unsigned a, b, c = 0;
+          if (part == 0 && sscanf(p, "%x:%x%n", &a, &b, &n) == 2)
+            trapBlocks.push_back({ (int) a, (int) b });
+          else if (part == 1 && sscanf(p, "%x:%x:%x%n", &a, &b, &c, &n) == 3)
+            patches.push_back({ true, (uint16_t) a, (uint8_t) b, (int16_t) c });
+          else
+            break;
+          p += n;
+          if (*p == ',')
+            ++p;
+        }
+      }
+      nes.setRomPatches(patches.data(), patches.size());
+      nes.enableVcCall(true);
+    }
+    else if (!strncmp(argv[i], "trapfile=", 9))
+      trapPath = argv[i] + 9;
     else if (!strncmp(argv[i], "mic=", 4))
       sscanf(argv[i] + 4, "%d-%d", &micFrom, &micTo);
     else if (!strncmp(argv[i], "hold=", 5)) {
@@ -319,6 +351,22 @@ static int run(int argc, char ** argv)
     nes.runFrame(true);
     if (tapeMode == Tape::PLAYING && tape.mode() != Tape::PLAYING)
       printf("tape: ended in frame %d\n", f);
+    if (uint16_t call = nes.vcCall()) {
+      auto mem = [&](int a) -> uint8_t & { return a < 0x2000 ? nes.ram[a & 0x7ff] : nes.prgRam[a & 0x1fff]; };
+      bool save = call == trapSave;
+      printf("trap: %s in frame %d\n", save ? "save" : call == trapLoad ? "load" : "unknown call", f);
+      if (FILE * tf = trapPath && (save || call == trapLoad) ? fopen(trapPath, save ? "wb" : "rb") : nullptr) {
+        for (auto & b : trapBlocks)
+          for (int k = 0; k < b.second; ++k) {
+            if (save)
+              fputc(mem(b.first + k), tf);
+            else
+              mem(b.first + k) = fgetc(tf);
+          }
+        fclose(tf);
+      }
+      nes.finishVcCall();
+    }
     if (!watches.empty()) {
       static std::vector<int> last;
       std::vector<int> now;

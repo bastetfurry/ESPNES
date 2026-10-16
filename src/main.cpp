@@ -1348,6 +1348,10 @@ static char const * fileKind(String const & path)
   if (path.endsWith(".st1"))      return "State 1";
   if (path.endsWith(".st2"))      return "State 2";
   if (path.endsWith(".stn"))      return "State tmp";
+  if (path.endsWith(".tp1"))      return "Tape data 1";
+  if (path.endsWith(".tp2"))      return "Tape data 2";
+  if (path.endsWith(".tp3"))      return "Tape data 3";
+  if (path.endsWith(".tp4"))      return "Tape data 4";
   return "?";
 }
 
@@ -1613,6 +1617,8 @@ static RomConfig parseConfig(char const * text)
       cfg.region = (int)(value == "pal" ? Region::PAL : Region::NTSC);
     else if (key == "overclock" && value.length() && isdigit((unsigned char) value[0]))
       cfg.overclock = std::min((long) Nes::MAX_OVERCLOCK, value.toInt());
+    else if (key == "tape")
+      ;                           // the tape trap, settled at build time (tools/tapetrap.py)
     else
       Serial.printf("config: ignoring \"%s\"\n", line.c_str());
   }
@@ -1817,6 +1823,12 @@ static char const * loadSlot(RomBlob const & rom, int slot)
 }
 
 
+// the tape trap's state (see "Tape traps")
+enum class TrapOp { NONE, SAVE, LOAD, WAIT_PC };
+static TrapOp         s_trapOp = TrapOp::NONE;
+static RomBlob const * s_trapRom;              // the game in the console (loadRom)
+
+
 // Returns nullptr or an error message.
 static char const * loadRom(RomBlob const & rom)
 {
@@ -1833,6 +1845,16 @@ static char const * loadRom(RomBlob const & rom)
 
   nes.setOverclock(cfg.overclock);
   applyCheats(rom);
+  // the tape trap's stub (cart versions), and the call it makes
+  s_trapRom = &rom;
+  s_trapOp = TrapOp::NONE;
+  Cheat patches[Nes::MAX_PATCHES];
+  int patchCount = 0;
+  if (TapeTrap const * t = rom.tapeTrap)
+    for (int i = 0; i < t->patchCount && patchCount < Nes::MAX_PATCHES; ++i)
+      patches[patchCount++] = { true, t->patches[i].addr, t->patches[i].value, t->patches[i].original };
+  nes.setRomPatches(patches, patchCount);
+  nes.enableVcCall(rom.tapeTrap != nullptr);
   nes.powerOn();
   Serial.printf("Loaded %s: mapper %d, PRG %d KB, CHR %d KB%s, %s%s, overclock %d%%, free heap %u\n",
                 rom.name, nes.cart().info.mapper, nes.cart().info.prgSize / 1024,
@@ -1952,6 +1974,32 @@ static void tapeRecord()
 }
 
 
+// Reads 'size' bytes in hex from serial into p (line ends and spaces between them are skipped);
+// false if they stop coming for a second.
+static bool readHex(uint8_t * p, long size)
+{
+  uint32_t last = millis();
+  long n = 0;
+  int high = -1;
+  while (n < size && millis() - last < 1000) {
+    int c = Serial.read();
+    if (c < 0)
+      continue;
+    last = millis();
+    int v = isdigit(c) ? c - '0' : isxdigit(c) ? (tolower(c) - 'a' + 10) : -1;
+    if (v < 0)
+      continue;
+    if (high < 0) {
+      high = v;
+    } else {
+      p[n++] = high << 4 | v;
+      high = -1;
+    }
+  }
+  return n == size;
+}
+
+
 // 'U' came over serial: the size and the image in hex follow
 static void receiveTape()
 {
@@ -1965,25 +2013,7 @@ static void receiveTape()
     Serial.println("Tape: no memory");
     return;
   }
-  uint32_t last = millis();
-  long n = 0;
-  int high = -1;
-  while (n < size && millis() - last < 1000) {
-    int c = Serial.read();
-    if (c < 0)
-      continue;
-    last = millis();
-    int v = isdigit(c) ? c - '0' : isxdigit(c) ? (tolower(c) - 'a' + 10) : -1;
-    if (v < 0)
-      continue;                    // line ends, spaces
-    if (high < 0) {
-      high = v;
-    } else {
-      p[n++] = high << 4 | v;
-      high = -1;
-    }
-  }
-  if (char const * err = n < size ? "Tape: incomplete" : s_tape.load(nullptr, size)) {
+  if (char const * err = !readHex(p, size) ? "Tape: incomplete" : s_tape.load(nullptr, size)) {
     s_tape.loadBuffer(0);
     Serial.println(err);
     showTapeState("BAD");
@@ -1991,6 +2021,176 @@ static void receiveTape()
   }
   Serial.printf("Tape: loaded %ld bytes\n", size);
   showTapeState("IN");
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// Tape traps (see TapeTrap in romindex.h, tools/tapetrap.py)
+//
+// A game with a tape trap (Mach Rider) saves and loads its data in memory, without a tape. When it
+// calls, a line over the picture asks where: one of four slots in SPIFFS ("<rom>.tp1" to ".tp4")
+// or the PC (tools/tape.py file); the game waits meanwhile. Over serial:
+//   File: data <hex, 64 bytes per line>   (as many lines as needed)
+//   File: end <size> <game>               a save, done
+//   File: want <size> <game>              a load: 'F', the size, a newline and the hex answer it
+
+static int            s_trapMessage;           // frames left for a message before the question
+
+static size_t trapSize(TapeTrap const & t)
+{
+  size_t n = 0;
+  for (int i = 0; i < t.blockCount; ++i)
+    n += t.blocks[i].size;
+  return n;
+}
+
+
+static uint8_t & trapByte(uint16_t addr)
+{
+  return addr < 0x2000 ? nes.ram[addr & 0x7ff] : nes.prgRam[addr & 0x1fff];
+}
+
+
+static String trapPath(int slot)
+{
+  char ext[5] = ".tp1";
+  ext[3] = '0' + slot;
+  return savePathFor(*s_trapRom, ext);
+}
+
+
+static void trapMessage(char const * text)
+{
+  showOverlay(text);
+  s_trapMessage = 90;
+  Serial.printf("Trap: %s\n", text);
+}
+
+
+static void trapDone(char const * text)
+{
+  trapMessage(text);
+  s_trapOp = TrapOp::NONE;
+  nes.finishVcCall();
+}
+
+
+// the game called: which call it is
+static void trapStart(uint16_t call)
+{
+  TapeTrap const * t = s_trapRom ? s_trapRom->tapeTrap : nullptr;
+  if (!t || (call != t->saveCall && call != t->loadCall)) {
+    Serial.printf("Trap: unknown call from $%04X\n", call);
+    nes.finishVcCall();
+    return;
+  }
+  s_trapOp = call == t->saveCall ? TrapOp::SAVE : TrapOp::LOAD;
+  s_trapMessage = 0;
+  Serial.printf("Trap: %s, 1-4 or p(c), ~ cancels\n", s_trapOp == TrapOp::SAVE ? "save" : "load");
+}
+
+
+// every frame while a trap waits: the question, unless a message shows
+static void trapPrompt()
+{
+  if (s_trapMessage) {
+    --s_trapMessage;
+    return;
+  }
+  showOverlay(s_trapOp == TrapOp::SAVE ? "SAVE: 1-4, P=PC, ESC" :
+              s_trapOp == TrapOp::LOAD ? "LOAD: 1-4, P=PC, ESC" : "WAITING FOR PC, ESC");
+}
+
+
+// a key while a trap waits: '1'-'4', 'p' or 27 (Esc)
+static void trapKey(int c)
+{
+  TapeTrap const & t = *s_trapRom->tapeTrap;
+  bool save = s_trapOp == TrapOp::SAVE;
+  char text[24];
+  if (c == 27) {
+    trapDone(save ? "NOT SAVED" : "NOT LOADED");
+    return;
+  }
+  if (s_trapOp == TrapOp::WAIT_PC)
+    return;
+  if (c >= '1' && c <= '4') {
+    int slot = c - '0';
+    File f = SPIFFS.open(trapPath(slot), save ? "w" : "r");
+    if (!f) {
+      snprintf(text, sizeof(text), save ? "CANNOT WRITE SLOT %d" : "SLOT %d IS EMPTY", slot);
+      trapMessage(text);
+      return;
+    }
+    if (!save && f.size() != trapSize(t)) {
+      snprintf(text, sizeof(text), "SLOT %d IS BROKEN", slot);
+      trapMessage(text);
+      return;
+    }
+    bool ok = true;
+    for (int i = 0; i < t.blockCount; ++i)
+      for (int k = 0; k < t.blocks[i].size; ++k) {
+        uint8_t & b = trapByte(t.blocks[i].addr + k);
+        ok &= save ? f.write(&b, 1) == 1 : f.read(&b, 1) == 1;
+      }
+    snprintf(text, sizeof(text), !ok ? "SLOT %d FAILED" : save ? "SAVED TO SLOT %d" : "LOADED SLOT %d", slot);
+    trapDone(text);
+    return;
+  }
+  if (c == 'p' && save) {
+    char line[2 * 64 + 1];
+    int n = 0;
+    for (int i = 0; i < t.blockCount; ++i)
+      for (int k = 0; k < t.blocks[i].size; ++k) {
+        snprintf(line + 2 * n, 3, "%02x", trapByte(t.blocks[i].addr + k));
+        if (++n == 64) {
+          Serial.printf("File: data %s\n", line);
+          n = 0;
+        }
+      }
+    if (n)
+      Serial.printf("File: data %s\n", line);
+    Serial.printf("File: end %u %s\n", (unsigned) trapSize(t), t.game);
+    trapDone("SENT TO PC");
+    return;
+  }
+  if (c == 'p') {
+    Serial.printf("File: want %u %s\n", (unsigned) trapSize(t), t.game);
+    s_trapOp = TrapOp::WAIT_PC;
+    s_trapMessage = 0;
+  }
+}
+
+
+// 'F' came over serial while waiting for the PC: the size and the data in hex follow
+static void receiveTrapFile()
+{
+  TapeTrap const & t = *s_trapRom->tapeTrap;
+  long size = Serial.parseInt();
+  std::vector<uint8_t> data(size > 0 && size <= 4096 ? size : 0);
+  if (size != (long) trapSize(t) || !readHex(data.data(), size)) {
+    Serial.printf("File: expected %u bytes\n", (unsigned) trapSize(t));
+    trapMessage("BAD FILE FROM PC");
+    return;
+  }
+  size_t n = 0;
+  for (int i = 0; i < t.blockCount; ++i)
+    for (int k = 0; k < t.blocks[i].size; ++k)
+      trapByte(t.blocks[i].addr + k) = data[n++];
+  Serial.println("File: loaded");
+  trapDone("LOADED FROM PC");
+}
+
+
+// a key from the keyboard as trapKey wants it, or 0
+static int trapKeyOf(fabgl::VirtualKey vk)
+{
+  using namespace fabgl;
+  if (vk >= VK_1 && vk <= VK_4)       return '1' + (vk - VK_1);
+  if (vk >= VK_KP_1 && vk <= VK_KP_4) return '1' + (vk - VK_KP_1);
+  if (vk == VK_p || vk == VK_P)       return 'p';
+  if (vk == VK_ESCAPE)                return 27;
+  return 0;
 }
 
 
@@ -2032,6 +2232,11 @@ static void runGame()
       padKeyEvent(vk, down);
       if (!down)
         continue;
+      if (s_trapOp != TrapOp::NONE) {           // the trap's question takes the keys
+        if (int c = trapKeyOf(vk))
+          trapKey(c);
+        continue;
+      }
       if (vk == fabgl::VK_ESCAPE)
         return;
       if (vk == fabgl::VK_F1)
@@ -2051,7 +2256,13 @@ static void runGame()
     }
     // serial console, for testing without a keyboard: 'q' leaves, a b e(select) s(tart) u d l r
     // tap a button for 10 frames
-    if (Serial.available()) {
+    if (Serial.available() && s_trapOp != TrapOp::NONE) {
+      int c = Serial.read();
+      if (c == 'F' && s_trapOp == TrapOp::WAIT_PC)
+        receiveTrapFile();
+      else
+        trapKey(c == '~' ? 27 : c);
+    } else if (Serial.available()) {
       int c = Serial.read();
       if (c == 'q')
         return;
@@ -2081,6 +2292,12 @@ static void runGame()
     Tape::Mode tapeMode = s_tape.mode();
     nes.runFrame(draw);
     int64_t t1 = esp_timer_get_time();
+    if (s_trapOp == TrapOp::NONE) {
+      if (uint16_t call = nes.vcCall())
+        trapStart(call);
+    }
+    if (s_trapOp != TrapOp::NONE)
+      trapPrompt();
     if (tapeMode != s_tape.mode()) {
       // the tape ran out, or the recording filled the memory
       if (tapeMode == Tape::RECORDING) {

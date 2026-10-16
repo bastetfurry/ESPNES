@@ -129,12 +129,25 @@ public:
   bool cheatsEnabled() const                  { return m_cheatsOn; }
   int  cheatCount() const                     { return m_cheatCount; }
 
+  // --- ROM patches: Game Genie style, but always on (not cheats), e.g. the tape traps' stubs ---
+  static constexpr int MAX_PATCHES = 32;
+  void setRomPatches(Cheat const * list, int count);
+
+  // --- the Wii Virtual Console's call ---
+  // A game writes $96 to $6000, then $C3 to $6001, and waits until the two are equal; the
+  // emulator does its work in between (Mach Rider's VC versions save and load their courses so).
+  // While enabled, vcCall() gives the return address on top of the stack at that moment (which
+  // of the game's calls it is), 0 for none; finishVcCall() lets the game go on. Between frames.
+  void     enableVcCall(bool on)              { m_vcCallOn = on; m_vcCall = 0; }
+  uint16_t vcCall() const                     { return m_vcCall; }
+  void     finishVcCall()                     { prgRam[0] = prgRam[1]; m_vcCall = 0; }
+
   // --- for mappers ---
   Cart const & cart() const                   { return m_cart; }
   void mapPrg8K(int slot, uint8_t const * p)
   {
     m_prgSource[slot] = p;
-    prgMap[slot] = NES_UNLIKELY(m_romCheats) ? patchedPage(slot, p) : p;
+    prgMap[slot] = NES_UNLIKELY(m_romPatched) ? patchedPage(slot, p) : p;
   }
   void mapChr1K(int slot, int bank);            // background and sprites alike
   void mapChrBg1K(int slot, int bank);          // background (and $2007) only
@@ -205,7 +218,15 @@ private:
   Cheat           m_cheats[MAX_CHEATS];
   int             m_cheatCount = 0;
   bool            m_cheatsOn = false;
-  bool            m_romCheats = false;          // on, with at least one Game Genie code
+  bool            m_romPatched = false;         // cheats on with a Game Genie code, or ROM patches
+  Cheat           m_patches[MAX_PATCHES];
+  int             m_patchCount = 0;
+  bool            m_vcCallOn = false;
+  uint16_t        m_vcCall = 0;
+  bool            patches(Cheat const & c, uint16_t base, uint8_t const * page) const
+  {
+    return c.rom && (uint16_t)(c.addr - base) < 0x2000 && (c.compare < 0 || page[c.addr - base] == c.compare);
+  }
   uint8_t const * m_prgSource[4] = { };         // the pages the mapper selected, unpatched
   static constexpr int PATCH_PAGES = 6;         // 8 KB of RAM each
   struct { uint8_t const * source; uint8_t * copy; } m_patched[PATCH_PAGES] = { };

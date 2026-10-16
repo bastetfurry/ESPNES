@@ -68,7 +68,10 @@ void Nes::eject()
 {
   freePatchedPages();
   m_cheatCount = 0;
-  m_cheatsOn = m_romCheats = false;
+  m_patchCount = 0;
+  m_cheatsOn = m_romPatched = false;
+  m_vcCallOn = false;
+  m_vcCall = 0;
   delete m_mapper;
   m_mapper = nullptr;
   free(prgRam);
@@ -193,9 +196,18 @@ void Nes::enableCheats(bool on)
   bool rom = false;
   for (int i = 0; i < m_cheatCount; ++i)
     rom |= m_cheats[i].rom;
-  m_romCheats = on && rom;
+  m_romPatched = (on && rom) || m_patchCount;
   freePatchedPages();
   remapPrg();
+}
+
+
+void Nes::setRomPatches(Cheat const * list, int count)
+{
+  m_patchCount = count < MAX_PATCHES ? count : MAX_PATCHES;
+  for (int i = 0; i < m_patchCount; ++i)
+    m_patches[i] = list[i];
+  enableCheats(m_cheatsOn);
 }
 
 
@@ -221,17 +233,17 @@ void Nes::freePatchedPages()
 }
 
 
-// The page to map at 'slot' for the ROM page 'page': a patched RAM copy if a Game Genie code
-// applies to it (for 8 letter codes: only where the ROM holds the compare value), else the page.
+// The page to map at 'slot' for the ROM page 'page': a patched RAM copy if a Game Genie code or
+// a ROM patch applies to it (with a compare value: only where the ROM holds it), else the page.
 uint8_t const * Nes::patchedPage(int slot, uint8_t const * page)
 {
   uint16_t base = 0x8000 + slot * 0x2000;
+  int cheats = m_cheatsOn ? m_cheatCount : 0;
   bool applies = false;
-  for (int i = 0; i < m_cheatCount && !applies; ++i) {
-    Cheat const & c = m_cheats[i];
-    applies = c.rom && (uint16_t)(c.addr - base) < 0x2000 &&
-              (c.compare < 0 || page[c.addr - base] == c.compare);
-  }
+  for (int i = 0; i < cheats && !applies; ++i)
+    applies = patches(m_cheats[i], base, page);
+  for (int i = 0; i < m_patchCount && !applies; ++i)
+    applies = patches(m_patches[i], base, page);
   if (!applies)
     return page;
 
@@ -249,11 +261,12 @@ uint8_t const * Nes::patchedPage(int slot, uint8_t const * page)
     if (!p.copy && !(p.copy = (uint8_t *) malloc(0x2000)))
       return page;                                // out of RAM: unpatched
     memcpy(p.copy, page, 0x2000);
-    for (int i = 0; i < m_cheatCount; ++i) {
-      Cheat const & c = m_cheats[i];
-      if (c.rom && (uint16_t)(c.addr - base) < 0x2000 && (c.compare < 0 || page[c.addr - base] == c.compare))
-        p.copy[c.addr - base] = c.value;
-    }
+    for (int i = 0; i < m_patchCount; ++i)
+      if (patches(m_patches[i], base, page))
+        p.copy[m_patches[i].addr - base] = m_patches[i].value;
+    for (int i = 0; i < cheats; ++i)
+      if (patches(m_cheats[i], base, page))
+        p.copy[m_cheats[i].addr - base] = m_cheats[i].value;
     p.source = page;
     return p.copy;
   }
@@ -392,6 +405,8 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
 
   if (addr >= 0x6000) {
     prgRam[addr & 0x1fff] = value;
+    if (NES_UNLIKELY(m_vcCallOn) && addr == 0x6001 && value == 0xc3 && prgRam[0] == 0x96)
+      m_vcCall = ram[0x100 | (uint8_t)(cpu.S + 1)] | ram[0x100 | (uint8_t)(cpu.S + 2)] << 8;
     return;
   }
 

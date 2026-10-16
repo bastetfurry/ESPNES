@@ -124,7 +124,7 @@ Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volu
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder). Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -226,8 +226,27 @@ A recording keeps going until it is stopped, and that includes the pad reads in 
 Mach Rider (every version except VS) has SAVE and LOAD for its designed courses in the menu, even
 on the NES. There, LOAD waits forever for a tape edge, because `$4016` bit 1 is open bus and
 always reads 0. Saving sends about 20 seconds of pulses down the pad strobe line and then
-returns. The Wii Virtual Console versions replace both calls with a trap: `$96`/`$C3` written to
-`$6000`/`$6001`, for the VC's emulator to answer.
+returns.
+
+### Tape traps
+
+Some games skip the tape and save straight from memory. This is what the Wii Virtual Console did
+for Mach Rider: its versions call a stub instead of the tape routines. The stub writes `$96` to
+`$6000` and `$C3` to `$6001`, then waits until the two are equal while the emulator saves or
+loads (`Nes::vcCall`). The call's return address tells a save from a load. For the cart versions,
+`tools/tapetrap.py` patches the same stub over the tape loader's entry and points the save's call
+at it. Both kinds are recognized from their code at build time, so translations and hacks work
+too. `tape=machrider` in the options insists on a trap, with a warning if the routines are not
+found, and `tape=none` turns it off to use the real tape.
+
+When the game saves or loads, a line over the picture asks where: 1-4 picks a slot in SPIFFS
+(`.tp1` to `.tp4`, listed in the file manager), P picks the PC, and Esc cancels. Over serial, the
+same choices are `1`-`4`, `p` and `~`. For the PC, `python3 tools/tape.py file course.bin` takes
+the game's next save or answers its next load. The data is Mach Rider's 320 bytes (`$0600`-`$063F`
+and `$0700`-`$07FF`), at the same addresses in every version, so a course moves between them.
+
+`python3 tools/tapetrap.py ROM` shows what is found and prints the host harness's
+`trap=...` option, which goes with `trapfile=FILE`.
 
 `host/nestool run ... taperec=FILE@F` records from frame F, and `tapeplay=FILE@F` plays a tape.
 

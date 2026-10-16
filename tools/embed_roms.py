@@ -26,6 +26,10 @@
 # VT100 form for the device by tools/nesmanual.py (the format is described there). A missing
 # manual is a warning; the menu then has none to show.
 #
+# Tape traps (tools/tapetrap.py): games whose Data Recorder saves are done in memory are found in
+# their code; the option tape=machrider insists on one (a warning if it is not found), tape=none
+# turns it off.
+#
 # An optional "<rom name>.cfg" next to a ROM (same name, .cfg instead of .nes) holds the same
 # settings, one "key = value" per line; it is merged after the CSV's options.
 
@@ -46,6 +50,7 @@ sys.path.insert(0, os.path.join(project, "tools"))
 import nesimage
 import nesmanual
 import nesfont
+import tapetrap
 
 
 def warn(msg):
@@ -220,10 +225,34 @@ for i, g in enumerate(games):
     cfg = cString(settings) if settings.strip() else "nullptr"
 
     with open(path, "rb") as f:
-        crc = zlib.crc32(f.read())
-    entries.append("  { %s, %s, nesrom_%d, %d, 0x%08x, %s, %d, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, crc, picRef, picSize, manualRef, cfg))
+        image = f.read()
+    crc = zlib.crc32(image)
 
-cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, 0, nullptr, 0, nullptr, nullptr },"])
+    # the tape trap: found in the code, unless "tape = none"; "tape = <game>" insists on one
+    tapeOption = None
+    for line in settings.splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "tape":
+            tapeOption = value.split("#")[0].strip().lower()
+    trapRef = "nullptr"
+    if tapeOption != "none":
+        if tapeOption and tapeOption not in tapetrap.GAMES:
+            warn("%s: unknown tape=%s (known: none, %s)" % (g["file"], tapeOption, ", ".join(tapetrap.GAMES)))
+        trap = tapetrap.find(image, tapeOption if tapeOption in tapetrap.GAMES else None)
+        if trap:
+            blocks = ", ".join("{ 0x%04x, 0x%x }" % b for b in trap["blocks"])
+            patches = ", ".join("{ 0x%04x, 0x%02x, 0x%02x }" % p for p in trap["patches"])
+            cpp.append("static const TapeTrap trap_%d = { %s, 0x%04x, 0x%04x, %d, { %s }, %d, { %s } };"
+                       % (i, cString(trap["game"]), trap["save"], trap["load"], len(trap["blocks"]), blocks,
+                          len(trap["patches"]), patches))
+            trapRef = "&trap_%d" % i
+            print("embed_roms: %s: tape trap for %s (%s)" % (g["file"], trap["game"], trap["kind"]))
+        elif tapeOption:
+            warn("%s: tape=%s, but its tape routines were not found" % (g["file"], tapeOption))
+
+    entries.append("  { %s, %s, nesrom_%d, %d, 0x%08x, %s, %d, %s, %s, %s }," % (cString(g["file"]), cString(g["name"]), i, size, crc, picRef, picSize, manualRef, cfg, trapRef))
+
+cpp += ["", "const RomBlob g_roms[] = {"] + (entries or ["  { nullptr, nullptr, nullptr, 0, 0, nullptr, 0, nullptr, nullptr, nullptr },"])
 cpp += ["};", "", "const int g_romCount = %d;" % len(games), ""]
 
 writeIfChanged(os.path.join(outDir, "roms.S"), "\n".join(asm) + "\n")

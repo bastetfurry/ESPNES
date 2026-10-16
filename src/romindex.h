@@ -5,6 +5,19 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// A game whose Data Recorder saves and loads are done in memory, without a tape
+// (tools/tapetrap.py): it calls a stub that writes $96 to $6000 and $C3 to $6001 and waits until
+// they are equal, the Wii Virtual Console's mechanism (Nes::vcCall); cart versions get that stub
+// as ROM patches. The call's return address tells a save from a load.
+struct TapeTrap {
+  char const * game;                    // which game's data, e.g. "machrider"
+  uint16_t     saveCall, loadCall;      // the return addresses the save's and the load's JSR push
+  uint8_t      blockCount;
+  struct { uint16_t addr, size; } blocks[4];   // in CPU RAM ($0000-$07FF) or save RAM ($6000-)
+  uint8_t      patchCount;
+  struct { uint16_t addr; uint8_t value, original; } patches[24];
+};
+
 struct RomBlob {
   char const *    name;       // file name in roms/
   char const *    title;      // name shown in the menu
@@ -16,6 +29,7 @@ struct RomBlob {
   size_t          pictureSize; // compressed
   char const *    manual;     // pages, or nullptr (format below)
   char const *    config;     // settings, "key = value" per line (CSV options + <name>.cfg), or nullptr
+  TapeTrap const * tapeTrap;  // or nullptr
 };
 
 static constexpr int PICTURE_SIZE = 64;

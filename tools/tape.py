@@ -10,6 +10,9 @@ The board keeps one tape in RAM; this moves tapes between it and files, over the
     python3 tools/tape.py info FILE        what is on a tape
     python3 tools/tape.py wav FILE OUT     the tape as sound (44100 Hz, 8 bit), to listen to or to
                                            record onto a real cassette
+    python3 tools/tape.py file FILE        for games with a tape trap (Mach Rider): answers the
+                                           game's next save (P on the board) into FILE, or its
+                                           next load from FILE
 
 Options: --port /dev/ttyUSB0 (default), --baud 115200 (default).
 The board's other console lines are shown as they come.
@@ -171,6 +174,35 @@ class Board:
             if time.time() > deadline:
                 sys.exit("no answer from the board (is a game running?)")
 
+    def file(self, path):
+        """Answers a tape trap's save or load (the board's "File:" lines)."""
+        data = bytearray()
+        for line in self.lines():
+            if line is None:
+                continue
+            if line.startswith("File: data "):
+                data += bytes.fromhex(line[11:])
+                continue
+            print(line)
+            words = line.split()
+            if line.startswith("File: end "):
+                if int(words[2]) != len(data):
+                    sys.exit("incomplete: %d of %s bytes" % (len(data), words[2]))
+                open(path, "wb").write(data)
+                print("saved %s (%d bytes of %s)" % (path, len(data), words[3]))
+                return
+            if line.startswith("File: want "):
+                if not os.path.exists(path):
+                    sys.exit("%s does not exist (Esc on the board cancels the load)" % path)
+                image = open(path, "rb").read()
+                if len(image) != int(words[2]):
+                    sys.exit("%s has %d bytes, %s wants %s" % (path, len(image), words[3], words[2]))
+                self.send(b"F%d\n" % len(image))
+                for i in range(0, len(image), 64):
+                    self.send(image[i:i + 64].hex().encode() + b"\n")
+            if line.startswith("File: loaded"):
+                return
+
     def echo(self):
         for line in self.lines():
             if line is not None:
@@ -193,7 +225,7 @@ def main(args):
         return info(args[1])
     if len(args) == 3 and args[0] == "wav":
         return wav(args[1], args[2])
-    if len(args) != 2 or args[0] not in ("record", "take", "put", "play"):
+    if len(args) != 2 or args[0] not in ("record", "take", "put", "play", "file"):
         sys.exit(__doc__)
     cmd, path = args
     board = Board(port, baud)
@@ -202,6 +234,9 @@ def main(args):
             board.send(b"R")
             print("recording, Enter stops")
             board.take(path, stop_on_enter=True)
+        elif cmd == "file":
+            print("waiting for the game to save (P on the board) or load")
+            board.file(path)
         elif cmd == "take":
             print("waiting for a tape (F6 records on the board, F7 stops)")
             board.take(path)

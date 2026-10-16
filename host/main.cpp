@@ -20,6 +20,9 @@
 //                                         taperec=FILE@F starts the Data Recorder recording at
 //                                         frame F and writes the tape to FILE at the end;
 //                                         tapeplay=FILE@F plays the tape FILE from frame F;
+//                                         type=F:TEXT plugs in the Family BASIC keyboard and types
+//                                         TEXT from frame F (\n is RETURN; 4 frames per key down,
+//                                         4 up; can be repeated)
 //                                         trap=SPEC (from tools/tapetrap.py) traps the game's
 //                                         tape save/load: the data goes to/comes from trapfile=FILE
 //   bench <rom.nes> <frames>              time frames with drawing, for a rough relative speed
@@ -28,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include <string>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -201,6 +205,7 @@ static int run(int argc, char ** argv)
   unsigned trapSave = 0, trapLoad = 0;
   std::vector<std::pair<int, int>> trapBlocks;
   char const * trapPath = nullptr;
+  std::vector<std::pair<int, std::string>> typing;    // from frame, text
   for (int i = 5; i < argc; ++i) {
     if (!strcmp(argv[i], "pal"))
       nes.setRegion(Region::PAL);
@@ -283,6 +288,20 @@ static int run(int argc, char ** argv)
       nes.setRomPatches(patches.data(), patches.size());
       nes.enableVcCall(true);
     }
+    else if (!strncmp(argv[i], "type=", 5)) {
+      char * colon = strchr(argv[i], ':');
+      std::string text;
+      for (char const * p = colon ? colon + 1 : ""; *p; ++p) {
+        if (p[0] == '\\' && p[1] == 'n') {
+          text += '\n';
+          ++p;
+        } else {
+          text += *p;
+        }
+      }
+      typing.push_back({ atoi(argv[i] + 5), text });
+      nes.setFamiKeyboard(true);
+    }
     else if (!strncmp(argv[i], "trapfile=", 9))
       trapPath = argv[i] + 9;
     else if (!strncmp(argv[i], "mic=", 4))
@@ -329,6 +348,19 @@ static int run(int argc, char ** argv)
         b |= h.buttons;
     nes.setButtons(0, b);
     nes.setMic(f >= micFrom && f <= micTo);
+    if (!typing.empty()) {
+      nes.releaseFamiKeys();
+      for (auto & t : typing) {
+        int k = (f - t.first) / 8, phase = (f - t.first) % 8;
+        if (f < t.first || k >= (int) t.second.size() || phase >= 4)
+          continue;
+        bool shift;
+        FamiKey key = famiKeyOfChar(t.second[k], &shift);
+        nes.setFamiKey(key, true);
+        if (shift)
+          nes.setFamiKey(FK_LSHIFT, true);
+      }
+    }
   };
   for (int f = 0; f < frames; ++f) {
     if (f == stateAt) {

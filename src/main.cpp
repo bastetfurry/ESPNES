@@ -14,14 +14,16 @@
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start; player 2 and the Famicom
 //       mic on the numpad (all changed with K in the ROM list); real NES pads on GPIOs (see
-//       PAD_LATCH_GPIO). Esc = back to the ROM list, F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
-//       F5/F6/F7 = the Data Recorder's play/record/stop (see "Data Recorder").
+//       PAD_LATCH_GPIO). SysRq (Alt+PrintScreen) = the system menu (tape, cheats, volume, reset,
+//       back to the ROM list) in every game; F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
+//       F5/F6/F7 = the Data Recorder's play/record/stop (see "Data Recorder"). Esc is the game's.
+//       Family BASIC: the keyboard is the Famicom's, Scroll Lock switches it to the pads and back.
 // In the ROM list, G edits the selected game's Game Genie / Action Replay codes.
-// Esc pauses the game and shows the ROM list; Enter on the paused game carries on, S saves its
+// "Back to the ROM list" pauses the game; Enter on the paused game carries on, S saves its
 // state in one of two slots per game, L loads one (see "savestates").
 // Serial console: a number starts that ROM from the list, 'k' sets the keys, 'q' leaves the game, and
 // a b e s u d l r tap A, B, sElect, Start and the directions; P R X play, record and stop the tape,
-// U loads one (tools/tape.py).
+// U loads one (tools/tape.py), y opens the system menu, T and a line types it on the Famicom keyboard.
 
 #include "compat.h"
 #include <vector>
@@ -181,6 +183,7 @@ static char const * fileManager();
 static bool   slotUsed(RomBlob const & rom, int slot);
 static char const * saveSlot(int idx, int slot);
 static void   applyCheats(RomBlob const & rom);
+static void   showOverlay(char const * text);
 
 // The game in the console while the menu shows: Esc pauses it (nothing is copied, the console just
 // waits), Enter on it carries on. Starting or loading another game ends it. -1: none.
@@ -953,12 +956,122 @@ static void padKeyEvent(fabgl::VirtualKey vk, bool down)
 }
 
 
+///////////////////////////////////////////////////////////////////////////////
+// Family BASIC keyboard (see nes/famikey.h)
+//
+// For games that want it (keyboard = yes, or "BASIC" in the file name), the PC keyboard is the
+// Famicom's, key by key at the same place (FabGL's US layout: on a German keyboard Z and Y are
+// swapped). Only SysRq (the system menu) and Scroll Lock (the keyboard as the pads and back)
+// stay the emulator's.
+//   Famicom      PC
+//   ESC          Esc, Tab           CTR    Ctrl         GRPH   Alt          KANA   AltGr (Right Alt)
+//   STOP         Pause/Break        DEL    Backspace, Delete                INS    Insert
+//   CLR HOME     Home               @ [    [ ]          ] YEN  \\ `         ^      =
+//   :            '                  _      Menu (the key with the list)
+
+static bool    s_famiMode;          // the keyboard is the Famicom's (else it drives the pads)
+static int     s_famiStopFrames;    // Pause sends no release: STOP is held for a few frames
+static String  s_famiTyping;        // text typed over serial ('T'), a key every 8 frames
+static int     s_famiTypingFrame;
+
+static FamiKey famiKeyOf(fabgl::VirtualKey vk)
+{
+  using namespace fabgl;
+  // before canonKey, which makes the right modifiers the left ones
+  if (vk == VK_RSHIFT)
+    return FK_RSHIFT;
+  if (vk == VK_RALT)
+    return FK_KANA;
+  vk = canonKey(vk);
+  bool shift;
+  if (vk >= VK_a && vk <= VK_z)
+    return famiKeyOfChar('a' + (vk - VK_a), &shift);
+  if (vk >= VK_0 && vk <= VK_9)
+    return famiKeyOfChar('0' + (vk - VK_0), &shift);
+  if (vk >= VK_F1 && vk <= VK_F8) {
+    static const FamiKey f[8] = { FK_F1, FK_F2, FK_F3, FK_F4, FK_F5, FK_F6, FK_F7, FK_F8 };
+    return f[vk - VK_F1];
+  }
+  switch (vk) {
+    case VK_ESCAPE: case VK_TAB:         return FK_ESC;
+    case VK_LCTRL:                       return FK_CTR;
+    case VK_LALT:                        return FK_GRPH;
+    case VK_LSHIFT:                      return FK_LSHIFT;
+    case VK_RETURN: case VK_KP_ENTER:    return FK_RETURN;
+    case VK_SPACE:                       return FK_SPACE;
+    case VK_BACKSPACE: case VK_DELETE:   return FK_DEL;
+    case VK_INSERT:                      return FK_INS;
+    case VK_HOME:                        return FK_CLRHOME;
+    case VK_UP:                          return FK_UP;
+    case VK_DOWN:                        return FK_DOWN;
+    case VK_LEFT:                        return FK_LEFT;
+    case VK_RIGHT:                       return FK_RIGHT;
+    case VK_MINUS:                       return FK_MINUS;
+    case VK_EQUALS:                      return FK_CARET;
+    case VK_GRAVEACCENT:                 return FK_YEN;
+    case VK_LEFTBRACKET:                 return FK_AT;
+    case VK_RIGHTBRACKET:                return FK_LBRACKET;
+    case VK_BACKSLASH:                   return FK_RBRACKET;
+    case VK_SEMICOLON:                   return FK_SEMICOLON;
+    case VK_QUOTE:                       return FK_COLON;
+    case VK_COMMA:                       return FK_COMMA;
+    case VK_PERIOD:                      return FK_PERIOD;
+    case VK_SLASH:                       return FK_SLASH;
+    case VK_APPLICATION:                 return FK_UNDERSCORE;
+    default:                             return FK_NONE;
+  }
+}
+
+
+static void famiKeyEvent(fabgl::VirtualKey vk, bool down)
+{
+  if (vk == fabgl::VK_PAUSE || vk == fabgl::VK_BREAK) {
+    if (down)
+      s_famiStopFrames = 6;
+    return;
+  }
+  nes.setFamiKey(famiKeyOf(vk), down);
+}
+
+
+static void setFamiMode(bool on)
+{
+  s_famiMode = on;
+  nes.releaseFamiKeys();
+  s_padState[0] = s_padState[1] = 0;
+  showOverlay(on ? "FAMICOM KEYBOARD" : "KEYBOARD AS PADS");
+  Serial.println(on ? "Keyboard: Famicom" : "Keyboard: pads");
+}
+
+
+// every frame: the STOP key's hold, and the next key of text typed over serial
+static void famiKeysFrame()
+{
+  if (s_famiStopFrames)
+    nes.setFamiKey(FK_STOP, --s_famiStopFrames > 0);
+  if (s_famiTyping.isEmpty())
+    return;
+  int phase = s_famiTypingFrame++ % 8;
+  bool shift;
+  FamiKey key = famiKeyOfChar(s_famiTyping[0], &shift);
+  if (phase == 0) {
+    nes.setFamiKey(key, true);
+    if (shift)
+      nes.setFamiKey(FK_LSHIFT, true);
+  } else if (phase == 4) {
+    nes.setFamiKey(key, false);
+    nes.setFamiKey(FK_LSHIFT, false);
+    s_famiTyping = s_famiTyping.substring(1);
+  }
+}
+
+
 // the keys the emulator keeps for itself
 static bool reservedKey(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
   return vk == VK_ESCAPE || vk == VK_F1 || vk == VK_F2 || vk == VK_F3 || vk == VK_F10 ||
-         vk == VK_F5 || vk == VK_F6 || vk == VK_F7;
+         vk == VK_F5 || vk == VK_F6 || vk == VK_F7 || vk == VK_SCROLLLOCK || vk == VK_SYSREQ;
 }
 
 
@@ -1587,6 +1700,7 @@ struct RomConfig {
   int save      = -1;       // -1 = from the header
   int region    = -1;       // -1 = automatic, else (int) Region
   int overclock = 0;
+  int keyboard  = -1;       // the Family BASIC keyboard; -1 = by name ("BASIC")
 };
 
 static RomConfig parseConfig(char const * text)
@@ -1617,6 +1731,8 @@ static RomConfig parseConfig(char const * text)
       cfg.region = (int)(value == "pal" ? Region::PAL : Region::NTSC);
     else if (key == "overclock" && value.length() && isdigit((unsigned char) value[0]))
       cfg.overclock = std::min((long) Nes::MAX_OVERCLOCK, value.toInt());
+    else if (key == "keyboard" && (yes || no))
+      cfg.keyboard = yes;
     else if (key == "tape")
       ;                           // the tape trap, settled at build time (tools/tapetrap.py)
     else
@@ -1844,6 +1960,7 @@ static char const * loadRom(RomBlob const & rom)
     loadSave();
 
   nes.setOverclock(cfg.overclock);
+  nes.setFamiKeyboard(cfg.keyboard >= 0 ? cfg.keyboard : strstr(rom.name, "BASIC") != nullptr);
   applyCheats(rom);
   // the tape trap's stub (cart versions), and the call it makes
   s_trapRom = &rom;
@@ -2194,13 +2311,135 @@ static int trapKeyOf(fabgl::VirtualKey vk)
 }
 
 
-// Runs the loaded game until Esc.
+///////////////////////////////////////////////////////////////////////////////
+// System menu: SysRq (Alt+PrintScreen) in every game, as in ESPPC. The game stands still while it
+// is open; the box is drawn over its picture, which the next frame paints again.
+
+enum class SysAction { RETURN, PLAY, RECORD, STOP, KEYBOARD, CHEATS, VOLUME, RESET, ROMLIST };
+
+static void drawSystemMenu(SysAction const * items, int count, int sel)
+{
+  constexpr int X = 24, W = 208, Y = 48;
+  int h = 8 * (count + 6);
+  fabgl::Canvas & cv = *s_canvas;
+  cv.setBrushColor(Color::Blue);
+  cv.fillRectangle(X, Y, X + W - 1, Y + h - 1);
+  cv.setPenColor(Color::BrightWhite);
+  cv.drawRectangle(X + 2, Y + 2, X + W - 3, Y + h - 3);
+  cv.setPenColor(Color::BrightYellow);
+  cv.drawText(X + (W - 18 * 8) / 2, Y + 6, "ESPNES System Menu");
+  // the tape, under the title
+  char line[32];
+  if (s_tape.empty())
+    snprintf(line, sizeof(line), "Tape: empty");
+  else
+    snprintf(line, sizeof(line), "Tape: %u B, %s", (unsigned) s_tape.size(),
+             s_tape.mode() == Tape::PLAYING ? "playing" : s_tape.mode() == Tape::RECORDING ? "recording" : "stopped");
+  cv.setPenColor(Color::BrightCyan);
+  cv.drawText(X + 12, Y + 20, line);
+  for (int i = 0; i < count; ++i) {
+    int y = Y + 34 + i * 8;
+    cv.setBrushColor(i == sel ? Color::BrightBlue : Color::Blue);
+    cv.fillRectangle(X + 8, y, X + W - 9, y + 7);
+    cv.setPenColor(i == sel ? Color::BrightWhite : Color::White);
+    switch (items[i]) {
+      case SysAction::RETURN:   snprintf(line, sizeof(line), "Return to game"); break;
+      case SysAction::PLAY:     snprintf(line, sizeof(line), "Tape: play"); break;
+      case SysAction::RECORD:   snprintf(line, sizeof(line), "Tape: record"); break;
+      case SysAction::STOP:     snprintf(line, sizeof(line), "Tape: stop"); break;
+      case SysAction::KEYBOARD: snprintf(line, sizeof(line), "Keyboard     [%s]", s_famiMode ? "Famicom" : "pads"); break;
+      case SysAction::CHEATS:   snprintf(line, sizeof(line), "Cheats       [%s]", !nes.cheatCount() ? "none" : nes.cheatsEnabled() ? "on" : "off"); break;
+      case SysAction::VOLUME:   snprintf(line, sizeof(line), "Volume       [%d/8]", s_volume); break;
+      case SysAction::RESET:    snprintf(line, sizeof(line), "Reset"); break;
+      case SysAction::ROMLIST:  snprintf(line, sizeof(line), "Back to the ROM list"); break;
+    }
+    cv.drawText(X + 12, y, line);
+  }
+  cv.setBrushColor(Color::Blue);
+  cv.setPenColor(Color::BrightBlack);
+  cv.drawText(X + 12, Y + h - 14, "\x18\x19 Enter  \x1b\x1a Volume  Esc");
+  cv.waitCompletion();
+}
+
+
+// Returns true to go back to the ROM list.
+static bool systemMenu()
+{
+  SysAction items[9];
+  int count = 0;
+  for (SysAction a : { SysAction::RETURN, SysAction::PLAY, SysAction::RECORD, SysAction::STOP, SysAction::KEYBOARD,
+                       SysAction::CHEATS, SysAction::VOLUME, SysAction::RESET, SysAction::ROMLIST })
+    if (a != SysAction::KEYBOARD || nes.famiKeyboard())
+      items[count++] = a;
+  int sel = 0;
+  nes.releaseFamiKeys();
+  s_padState[0] = s_padState[1] = 0;
+  Serial.println("System menu: n/p select, o does it, < > volume, ~ leaves");
+  auto kb = PS2.keyboard();
+  for (;;) {
+    drawSystemMenu(items, count, sel);
+    // a key: from the keyboard, or n p o < > ~ over serial
+    int key = 0;
+    while (!key) {
+      if (kb->virtualKeyAvailable()) {
+        bool down;
+        auto vk = kb->getNextVirtualKey(&down, 0);
+        if (!down)
+          continue;
+        using namespace fabgl;
+        if (vk == VK_UP || vk == VK_KP_UP || vk == VK_KP_8)               key = 'p';
+        else if (vk == VK_DOWN || vk == VK_KP_DOWN || vk == VK_KP_2)      key = 'n';
+        else if (vk == VK_RETURN || vk == VK_KP_ENTER || vk == VK_SPACE)  key = 'o';
+        else if (vk == VK_LEFT || vk == VK_KP_LEFT || vk == VK_KP_4)      key = '<';
+        else if (vk == VK_RIGHT || vk == VK_KP_RIGHT || vk == VK_KP_6)    key = '>';
+        else if (vk == VK_ESCAPE || vk == VK_SYSREQ)                     key = '~';
+      } else if (Serial.available()) {
+        int c = Serial.read();
+        if (strchr("npo<>~", c))
+          key = c;
+      } else {
+        delay(10);
+      }
+    }
+    SysAction a = items[sel];
+    if (key == 'p')
+      sel = (sel + count - 1) % count;
+    else if (key == 'n')
+      sel = (sel + 1) % count;
+    else if (key == '~')
+      return false;
+    else if ((key == '<' || key == '>') && a == SysAction::VOLUME) {
+      s_volume = std::max(0, std::min(8, s_volume + (key == '>' ? 1 : -1)));
+      Serial.printf("Volume %d/8\n", s_volume);
+    } else if (key == 'o') {
+      switch (a) {
+        case SysAction::RETURN:   return false;
+        case SysAction::PLAY:     tapePlay(); return false;
+        case SysAction::RECORD:   tapeRecord(); return false;
+        case SysAction::STOP:     tapeStop(); return false;
+        case SysAction::KEYBOARD: setFamiMode(!s_famiMode); break;
+        case SysAction::CHEATS:   toggleCheats(); break;
+        case SysAction::VOLUME:   break;
+        case SysAction::RESET:    nes.powerOn(); Serial.println("Reset"); return false;
+        case SysAction::ROMLIST:  return true;
+      }
+    }
+  }
+}
+
+
+// Runs the loaded game until it goes back to the ROM list (the system menu, or 'q' over serial).
 static void runGame()
 {
   auto kb = PS2.keyboard();
   kb->emptyVirtualKeyQueue();
   s_padState[0] = s_padState[1] = 0;
   s_micState = false;
+  nes.releaseFamiKeys();
+  s_famiTyping = String();
+  s_famiMode = false;
+  if (nes.famiKeyboard())
+    setFamiMode(true);
 
   // NTSC 60.0988 Hz, PAL 50.007 Hz
   const int64_t period = nes.region() == Region::PAL ? 19997 : 16639;
@@ -2229,16 +2468,30 @@ static void runGame()
     while (kb->virtualKeyAvailable()) {
       bool down;
       auto vk = kb->getNextVirtualKey(&down, 0);
-      padKeyEvent(vk, down);
-      if (!down)
-        continue;
       if (s_trapOp != TrapOp::NONE) {           // the trap's question takes the keys
-        if (int c = trapKeyOf(vk))
+        if (int c = down ? trapKeyOf(vk) : 0)
           trapKey(c);
         continue;
       }
-      if (vk == fabgl::VK_ESCAPE)
-        return;
+      if (down && vk == fabgl::VK_SYSREQ) {
+        if (systemMenu())
+          return;
+        // the time the menu was open is not to be caught up
+        next = esp_timer_get_time();
+        kb->emptyVirtualKeyQueue();
+        continue;
+      }
+      if (down && vk == fabgl::VK_SCROLLLOCK && nes.famiKeyboard()) {
+        setFamiMode(!s_famiMode);
+        continue;
+      }
+      if (s_famiMode) {                         // every other key is the Famicom's
+        famiKeyEvent(vk, down);
+        continue;
+      }
+      padKeyEvent(vk, down);
+      if (!down)
+        continue;
       if (vk == fabgl::VK_F1)
         nes.powerOn();
       if (vk == fabgl::VK_F10)
@@ -2276,6 +2529,24 @@ static void runGame()
         tapeStop();
       if (c == 'U')
         receiveTape();
+      if (c == 'y') {                           // the system menu
+        if (systemMenu())
+          return;
+        next = esp_timer_get_time();
+      }
+      if (c == 'T' && nes.famiKeyboard()) {     // text for the Famicom keyboard, to the line end
+        String line;                            // ('|' is RETURN)
+        uint32_t start = millis();
+        while (millis() - start < 1000) {
+          int ch = Serial.read();
+          if (ch < 0)
+            continue;
+          if (ch == '\n')
+            break;
+          line += ch == '|' ? '\n' : (char) ch;
+        }
+        s_famiTyping += line;
+      }
       static char const keys[] = "abesudlr";
       if (char const * k = strchr(keys, c)) {
         serialButtons = 1 << (k - keys);
@@ -2283,6 +2554,7 @@ static void runGame()
       }
     }
     updatePads(serialFrames ? serialButtons : 0);
+    famiKeysFrame();
     if (serialFrames)
       --serialFrames;
 

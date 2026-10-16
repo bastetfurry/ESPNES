@@ -72,10 +72,39 @@ Left, Right, Select, Start, B, A, and for player 2 the Mic). A key another butto
 player) already has swaps with it, Esc cancels. The keys are the same for all games and kept in
 SPIFFS (`/keys.cfg`), written only when they change. Left and right Ctrl/Alt/Shift count as one
 key, a letter works with Shift held, and a numpad key is the same with or without Num Lock (but
-not the same as the arrow keys). Esc, F1-F3, F5-F7 and F10 cannot be used.
+not the same as the arrow keys). Esc, F1-F3, F5-F7, F10, Scroll Lock and SysRq cannot be used.
 
 Mic is the Famicom's microphone on the second pad: while it is held, `$4016` bit 2 reads noise,
 like someone talking into it (Famicom games use it, e.g. the Japanese Zelda's Pols Voice).
+
+### System menu
+
+Alt+PrtScr (SysRq) opens the system menu over the paused game, the same key as in ESPPC. It has
+the tape (play, record, stop, and what is on it), the keyboard (Famicom or pads, for keyboard
+games), cheats on/off, the volume (Left/Right), reset and back to the ROM list. Esc or SysRq
+returns to the game.
+
+### Family BASIC keyboard
+
+Games with "BASIC" in the file name, or `keyboard=yes` in their options, get the Family BASIC
+keyboard: the PC keyboard becomes the Famicom's (`$4016` writes select the row and column,
+`$4017` bits 1-4 read the keys, see `src/nes/famikey.h`). Keys sit where they are on the
+Famicom, judged by FabGL's US layout, so Z and Y are swapped on a German keyboard. Only SysRq and
+Scroll Lock stay the emulator's; Scroll Lock switches the keyboard to the pads and back.
+
+| Famicom | PC | Famicom | PC |
+|---|---|---|---|
+| ESC | Esc, Tab | STOP | Pause/Break |
+| CTR | Ctrl | GRPH | Alt |
+| KANA | AltGr | CLR HOME | Home |
+| INS | Insert | DEL | Backspace, Delete |
+| @ [ ] | [ ] \\ | ¥ | \` |
+| ^ | = | : | ' |
+| _ | Menu key | F1-F8 | F1-F8 |
+
+Use Family BASIC V3.0, which has 4 KB for programs (4086 bytes free). V2.x has 2 KB. SAVE and LOAD
+go to the Data Recorder: press record (or play) in the system menu, then type SAVE "NAME" (or
+LOAD). `host/nestool run ... type=F:TEXT` types on the keyboard from frame F (`\n` is RETURN).
 
 ### Real pads
 
@@ -96,7 +125,7 @@ connected). Real pads and keys work at the same time.
 
 ## Savestates
 
-Esc pauses the game and shows the ROM list, with a green arrow at the paused game. Enter on it
+"Back to the ROM list" in the system menu (SysRq) pauses the game and shows the ROM list, with a green arrow at the paused game. Enter on it
 carries on where it was; starting or loading another game ends it. Nothing is copied for that: the
 console just waits.
 
@@ -120,11 +149,11 @@ files of removed games; both ask first.
 `host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
 same frames again: picture, RAM and CPU must come out the same (all games here do).
 
-Esc goes back to the ROM list (pausing the game), F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the tape, F10 switches cheats. In the list, Left/Right picks the TV system
+SysRq (Alt+PrtScr) opens the system menu, in every game (see below). Esc belongs to the game; in menus and dialogs it goes back. F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the tape, and F10 switches cheats. In the list, Left/Right picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game; `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
+that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game, `y` opens the system menu (`n`/`p` select, `o` does it, `<`/`>` volume, `~` closes), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -254,7 +283,7 @@ and `$0700`-`$07FF`), at the same addresses in every version, so a course moves 
 
 Games with a battery (the header's battery flag) keep their 8 KB of save RAM in the 512 KB SPIFFS
 partition. It is loaded when the game starts and written back when you return to the ROM list
-with Esc, only if it changed. A reset (F1) keeps it, as on the console. Switching the board off
+only if it changed. A reset (F1) keeps it, as on the console. Switching the board off
 while in a game loses what happened since the game was started, so go back to the list first.
 
 Save files are named after the start of the ROM's name plus the CRC32 of its contents, so

@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <limits.h>
+#include <string.h>
 
 #include "platform.h"
 #include "cart.h"
@@ -12,6 +13,7 @@
 #include "cheat.h"
 #include "state.h"
 #include "tape.h"
+#include "famikey.h"
 
 #ifdef NES_TRACE
 class Nes;
@@ -66,6 +68,20 @@ public:
     m_tape->record(cpu.cycles, m_expOut & 1, m_region == Region::PAL ? 1662607 : 1789773, capacity);
   }
   void tapePlay()                             { m_tape->play(cpu.cycles); }
+  // The Family BASIC keyboard (see famikey.h): plugged in or not, and its keys.
+  void setFamiKeyboard(bool on)               { m_famiKeyboard = on; releaseFamiKeys(); }
+  bool famiKeyboard() const                   { return m_famiKeyboard; }
+  void setFamiKey(FamiKey key, bool down)
+  {
+    if (key >= FK_COUNT)
+      return;
+    uint8_t bit = 2 << (key & 3);
+    if (down)
+      m_famiKeys[key >> 2] |= bit;
+    else
+      m_famiKeys[key >> 2] &= ~bit;
+  }
+  void releaseFamiKeys()                      { memset(m_famiKeys, 0, sizeof(m_famiKeys)); }
   // Where the picture goes: 240 line buffers of 256 bytes (32 bit aligned), the output byte for
   // each of the 64 NES colours, and whether to use FabGL's raw scanline byte order.
   void setVideoOutput(uint8_t * const * lines, uint8_t const * colorMap, bool vgaOrder)
@@ -207,6 +223,9 @@ private:
   bool       m_mic = false;
   uint16_t   m_micNoise = 1;     // LFSR
   uint8_t    m_expOut = 0;       // the last $4016 write's bits 0-2 (the expansion port's outputs)
+  bool       m_famiKeyboard = false;
+  uint8_t    m_famiKeys[20] = { };  // per row and column the held keys, in bits 1-4; row 9 has none
+  uint8_t    m_famiRow = 0;
   Tape *     m_tape = nullptr;
 
   bool            state(StateIO & io);

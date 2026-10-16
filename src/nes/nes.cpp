@@ -106,6 +106,7 @@ void Nes::powerOn()
     memset(m_chrRam, 0, 0x2000);
   m_strobe = false;
   m_expOut = 0;
+  m_famiRow = 0;
   ppu.reset();
   apu.reset(m_region);
   m_mapper->reset();
@@ -365,11 +366,15 @@ NES_HOT uint8_t Nes::readIO(uint16_t addr)
       }
       if (!port && m_tape && (m_expOut & 4))
         bit |= m_tape->input(cpu.cycles) << 1;
+      if (port && m_famiKeyboard && (m_expOut & 4))
+        bit |= ~m_famiKeys[m_famiRow * 2 + ((m_expOut >> 1) & 1)] & 0x1e;
 #ifdef NES_TRACE
       if (nesTraceRead)
         nesTraceRead(*this, addr, (bus & 0xe0) | bit);
 #endif
-      return bus = (bus & 0xe0) | bit;           // only bit 0 (and the mic's bit 2, the tape's bit 1) is driven, the rest is open bus
+      // bit 0 is driven (and the mic's bit 2, the tape's bit 1, the keyboard's bits 1-4), bits 5-7
+      // are open bus; bits 1-4 read 0 without anything on the expansion port
+      return bus = (bus & 0xe0) | bit;
     }
     default:
       if (addr >= 0x4020) {
@@ -433,6 +438,12 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   }
 
   if (addr == 0x4016) {
+    if (m_famiKeyboard) {
+      if (value & 1)
+        m_famiRow = 0;
+      else if ((m_expOut & 2) && !(value & 2))   // column 1 -> 0: the next row
+        m_famiRow = m_famiRow == 9 ? 0 : m_famiRow + 1;
+    }
     m_expOut = value & 7;
     if (m_tape)
       m_tape->output(cpu.cycles, value & 1);

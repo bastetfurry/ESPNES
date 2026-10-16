@@ -243,6 +243,7 @@ private:
   int        m_nsfSong = 0;
   int64_t    m_nsfTime = 0;      // NSF: microseconds of play time not yet given to PLAY
   bool       m_fdsAudio = false; // $4040-$4097 are the FDS sound's
+  bool       m_vrc6Audio = false; // $9000-$B002 are (also) the VRC6 sound's
   void       nsfCall(uint16_t addr);
   uint16_t   m_micNoise = 1;     // LFSR
   uint8_t    m_expOut = 0;       // the last $4016 write's bits 0-2 (the expansion port's outputs)

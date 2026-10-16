@@ -231,6 +231,7 @@ void Apu::reset(Region region)
   m_hpPrevIn = m_hpPrevOut = 0;
   m_fdsLowpass = 0;
   fds.reset();
+  vrc6.reset();
   for (int i = 0; i < METERS; ++i) {
     m_meterMin[i] = 255;
     m_meterMax[i] = 0;
@@ -327,6 +328,8 @@ NES_HOT void Apu::advance(int32_t n)
   advanceDmc(n);
   if (NES_UNLIKELY(fdsOn))
     fds.advance(n);
+  if (NES_UNLIKELY(vrc6On))
+    vrc6.advance(n);
   m_cycle += n;
   m_seqCycle += n;
   m_accCycles += n;
@@ -346,6 +349,11 @@ NES_HOT void Apu::emitSample()
     meter(METER_DMC, m_dmc.acc / cycles);
     if (fdsOn)
       meter(METER_FDS, fds.acc / cycles);
+    if (vrc6On) {
+      meter(METER_VRC6_1, vrc6.acc[0] / cycles);
+      meter(METER_VRC6_2, vrc6.acc[1] / cycles);
+      meter(METER_SAW, vrc6.acc[2] / cycles);
+    }
   }
   m_pulse[0].acc = m_pulse[1].acc = m_tri.acc = m_noise.acc = m_dmc.acc = 0;
   if (NES_UNLIKELY(fdsOn)) {
@@ -354,6 +362,11 @@ NES_HOT void Apu::emitSample()
     fds.acc = 0;
     m_fdsLowpass += (level - m_fdsLowpass) * m_fdsLowpassK / 1024;
     mix += m_fdsLowpass;
+  }
+  if (NES_UNLIKELY(vrc6On)) {
+    // its pulses about as loud as the 2A03's, the saw (0-31) on the same scale
+    mix += (vrc6.acc[0] + vrc6.acc[1] + vrc6.acc[2]) * 752 / cycles;
+    vrc6.acc[0] = vrc6.acc[1] = vrc6.acc[2] = 0;
   }
   m_accCycles = 0;
 

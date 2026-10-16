@@ -2661,14 +2661,30 @@ static uint32_t s_nsfFrames;        // played of the current song
 static int      s_nsfShownSeconds;
 
 // a level bar per channel, between the picture and the song line
-static constexpr int  METER_X = 20, METER_Y = 118, METER_W = 24, METER_H = 36, METER_STEP = 36;
-static char const *   METER_NAMES[Apu::METERS] = { "P1", "P2", "TR", "NO", "DM", "FD" };
-static const uint8_t  METER_FULL[Apu::METERS] = { 15, 15, 15, 15, 64, 63 };
+static constexpr int  METER_Y = 118, METER_H = 36;
+static char const *   METER_NAMES[Apu::METERS] = { "P1", "P2", "TR", "NO", "DM", "FD", "V1", "V2", "SA" };
+static const uint8_t  METER_FULL[Apu::METERS] = { 15, 15, 15, 15, 64, 63, 15, 15, 31 };
 static int            s_meterShown[Apu::METERS];   // pixels, falling back slowly
+static int            s_meters[Apu::METERS];       // the channels the music has, as Apu::METER_
+static int            s_meterCount;
 
-static int nsfMeterCount()
+// the channels to show, and where: spread over the width
+static void nsfMeterLayout(int i, int * x, int * w)
 {
-  return nes.nsf().chips & NSF_FDS ? Apu::METERS : Apu::METER_FDS;
+  int step = s_meterCount ? 236 / s_meterCount : 36;
+  if (step > 36)
+    step = 36;
+  *w = step * 2 / 3;
+  *x = (256 - step * s_meterCount) / 2 + i * step + (step - *w) / 2;
+}
+
+static void nsfMeterChannels()
+{
+  s_meterCount = 0;
+  for (int m = 0; m < Apu::METERS; ++m)
+    if (m <= Apu::METER_DMC || (m == Apu::METER_FDS && (nes.nsf().chips & NSF_FDS)) ||
+        (m >= Apu::METER_VRC6_1 && (nes.nsf().chips & NSF_VRC6)))
+      s_meters[s_meterCount++] = m;
 }
 
 
@@ -2679,22 +2695,25 @@ static void drawNsfMeters()
   nes.apu.takeMeters(level);
   fabgl::Canvas & cv = *s_canvas;
   static const Color COLOURS[Apu::METERS] = { Color::BrightGreen, Color::BrightGreen, Color::BrightCyan,
-                                              Color::BrightYellow, Color::BrightMagenta, Color::BrightRed };
-  for (int i = 0; i < nsfMeterCount(); ++i) {
-    int h = (s_nsfPaused ? 0 : level[i]) * METER_H / METER_FULL[i];
+                                              Color::BrightYellow, Color::BrightMagenta, Color::BrightRed,
+                                              Color::BrightWhite, Color::BrightWhite, Color::Yellow };
+  for (int i = 0; i < s_meterCount; ++i) {
+    int m = s_meters[i];
+    int h = (s_nsfPaused ? 0 : level[m]) * METER_H / METER_FULL[m];
     if (h > METER_H)
       h = METER_H;
     if (h < s_meterShown[i] - 2)
       h = s_meterShown[i] - 2;
     if (h == s_meterShown[i])
       continue;
-    int x = METER_X + i * METER_STEP;
+    int x, w;
+    nsfMeterLayout(i, &x, &w);
     cv.setBrushColor(Color::Black);
     if (h < METER_H)
-      cv.fillRectangle(x, METER_Y, x + METER_W - 1, METER_Y + METER_H - 1 - h);
-    cv.setBrushColor(COLOURS[i]);
+      cv.fillRectangle(x, METER_Y, x + w - 1, METER_Y + METER_H - 1 - h);
+    cv.setBrushColor(COLOURS[m]);
     if (h > 0)
-      cv.fillRectangle(x, METER_Y + METER_H - h, x + METER_W - 1, METER_Y + METER_H - 1);
+      cv.fillRectangle(x, METER_Y + METER_H - h, x + w - 1, METER_Y + METER_H - 1);
     s_meterShown[i] = h;
   }
 }
@@ -2740,16 +2759,20 @@ static void drawNsfScreen()
   centred(24, n.artist, Color::White);
   centred(36, n.copyright, Color::BrightBlack);
   char chips[32];
-  snprintf(chips, sizeof(chips), "%s%s, %s", "2A03", n.chips & NSF_FDS ? " + FDS" : "",
-           nes.region() == Region::PAL ? "PAL" : "NTSC");
+  snprintf(chips, sizeof(chips), "2A03%s%s, %s", n.chips & NSF_FDS ? " + FDS" : "",
+           n.chips & NSF_VRC6 ? " + VRC6" : "", nes.region() == Region::PAL ? "PAL" : "NTSC");
   centred(184, chips, Color::White);
   cv.setPenColor(Color::BrightBlack);
   cv.drawText(0, 224, "\x1b\x1a:song  Start:pause  SysRq:menu");
   cv.waitCompletion();
   // the bars' names
   cv.setPenColor(Color::BrightBlack);
-  for (int i = 0; i < nsfMeterCount(); ++i)
-    cv.drawText(METER_X + i * METER_STEP + (METER_W - 16) / 2, METER_Y + METER_H + 2, METER_NAMES[i]);
+  nsfMeterChannels();
+  for (int i = 0; i < s_meterCount; ++i) {
+    int x, w;
+    nsfMeterLayout(i, &x, &w);
+    cv.drawText(x + (w - 16) / 2, METER_Y + METER_H + 2, METER_NAMES[s_meters[i]]);
+  }
   cv.waitCompletion();
   memset(s_meterShown, 0, sizeof(s_meterShown));
   drawPicture(s_trapRom - g_roms, (256 - PICTURE_SIZE) / 2, 48);

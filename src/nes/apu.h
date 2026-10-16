@@ -10,6 +10,7 @@
 #include "platform.h"
 #include "cart.h"
 #include "fds_audio.h"
+#include "vrc6_audio.h"
 
 class Nes;
 class StateIO;
@@ -55,9 +56,15 @@ public:
   FdsAudio fds;
   bool     fdsOn = false;
 
+  // the VRC6's sound, mixed in while vrc6On (VRC6 music; Nes routes $9000-$B002 to it)
+  Vrc6Audio vrc6;
+  bool      vrc6On = false;
+
   // Level meters (while metersOn): how far each channel's output swung since the last call, per
-  // sample: pulse 1, pulse 2, triangle, noise (0-15), DMC (0-127), FDS (0-63)
-  enum { METER_PULSE1, METER_PULSE2, METER_TRIANGLE, METER_NOISE, METER_DMC, METER_FDS, METERS };
+  // sample: pulse 1, pulse 2, triangle, noise (0-15), DMC (0-127), FDS (0-63), VRC6 pulse 1 and 2
+  // (0-15), VRC6 saw (0-31)
+  enum { METER_PULSE1, METER_PULSE2, METER_TRIANGLE, METER_NOISE, METER_DMC, METER_FDS,
+         METER_VRC6_1, METER_VRC6_2, METER_SAW, METERS };
   bool     metersOn = false;
   void     takeMeters(uint8_t out[METERS]);
 

@@ -70,6 +70,9 @@ public:
   {
     for (int i = 0; i < 4; ++i)
       m_nes.mapPrg8K(i, m_ram + i * 0x2000);
+    // the PPU has nothing to show, but some music reads or writes it: CHR RAM, nametables
+    m_nes.mapChr8K(0);
+    m_nes.setMirroring(Mirroring::Vertical);
   }
 
   // the music's data, as at power on: the initial banks, or the data at its load address

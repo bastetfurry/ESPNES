@@ -21,8 +21,8 @@
 //                                         frame F and writes the tape to FILE at the end;
 //                                         tapeplay=FILE@F plays the tape FILE from frame F;
 //                                         type=F:TEXT plugs in the Family BASIC keyboard and types
-//                                         TEXT from frame F (\n is RETURN; 4 frames per key down,
-//                                         4 up; can be repeated); famikey=CODE@FROM-TO holds
+//                                         TEXT from frame F (\n is RETURN; as the firmware's 'T':
+//                                         10 frames a key, 42 for RETURN; can be repeated); famikey=CODE@FROM-TO holds
 //                                         one key (famikey.h's number) in those frames
 //                                         trap=SPEC (from tools/tapetrap.py) traps the game's
 //                                         tape save/load: the data goes to/comes from trapfile=FILE
@@ -363,14 +363,21 @@ static int run(int argc, char ** argv)
         if (f >= h.from && f <= h.to)
           nes.setFamiKey((FamiKey) h.key, true);
       for (auto & t : typing) {
-        int k = (f - t.first) / 8, phase = (f - t.first) % 8;
-        if (f < t.first || k >= (int) t.second.size() || phase >= 4)
+        // as the firmware types: Shift first, the key 2 frames later for 4 frames, then up; 10
+        // frames a key, 42 for RETURN (BASIC is busy with the line)
+        int at = t.first, k = 0;
+        auto length = [&](char c) { return c == '\n' ? 42 : 10; };
+        while (k < (int) t.second.size() && f >= at + length(t.second[k]))
+          at += length(t.second[k++]);
+        if (f < t.first || k >= (int) t.second.size())
           continue;
         bool shift;
         FamiKey key = famiKeyOfChar(t.second[k], &shift);
-        nes.setFamiKey(key, true);
-        if (shift)
+        int phase = f - at;
+        if (phase < 6 && shift)
           nes.setFamiKey(FK_LSHIFT, true);
+        if (phase >= 2 && phase < 6)
+          nes.setFamiKey(key, true);
       }
     }
   };

@@ -115,6 +115,24 @@ Use Family BASIC V3.0, which has 4 KB for programs (4086 bytes free). V2.x has 2
 go to the Data Recorder: press record (or play) in the system menu, then type SAVE "NAME" (or
 LOAD). `host/nestool run ... type=F:TEXT` types on the keyboard from frame F (`\n` is RETURN).
 
+Programs move between the board and the PC as text listings with `tools/fbasic.py`. It decodes
+Family BASIC's tape format (Sharp MZ: a header block with type, name and size, then the program
+as it is in memory at `$6006`) and turns the tokens into text, or text back into tokens and a
+tape. The tapes it writes have one-second leaders instead of nine, so a short program loads in
+a few seconds:
+
+    python3 tools/fbasic.py send prog.bas          puts it in, types LOAD and plays it
+    python3 tools/fbasic.py receive prog.bas NAME  types SAVE "NAME", records; Enter when OK shows
+    python3 tools/fbasic.py list tape.ftap         the files on a tape, programs as listings
+    python3 tools/fbasic.py export tape.ftap prog.bas
+    python3 tools/fbasic.py import prog.bas tape.ftap [NAME]
+
+Everything a program needs is in the listing: music is PLAY strings, and sprites are the fixed
+character sets (CGSET, DEF SPRITE). Screens made with BGTOOL are saved as files of their own
+type; `list` shows their names and sizes but does not convert them. Characters outside ASCII
+(kana, graphics) are written as `{XX}` in hex. Typing over serial (`T`) waits after each RETURN,
+because BASIC misses keys while it takes in a line.
+
 ### Real pads
 
 NES pads can be wired to free GPIOs: latch and clock shared by both pads, a data line each. Set

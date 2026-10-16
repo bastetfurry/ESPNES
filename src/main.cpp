@@ -1260,17 +1260,21 @@ static void famiKeysFrame()
     nes.setFamiKey(FK_STOP, --s_famiStopFrames > 0);
   if (s_famiTyping.isEmpty())
     return;
-  int phase = s_famiTypingFrame++ % 8;
+  // Shift first, the key 2 frames later for 4 frames, then 4 frames up (36 after RETURN: BASIC is
+  // busy with the line); Family BASIC loses a key that goes down as Shift changes
+  int phase = s_famiTypingFrame++;
   bool shift;
   FamiKey key = famiKeyOfChar(s_famiTyping[0], &shift);
-  if (phase == 0) {
+  if (phase == 0 && shift)
+    nes.setFamiKey(FK_LSHIFT, true);
+  else if (phase == 2)
     nes.setFamiKey(key, true);
-    if (shift)
-      nes.setFamiKey(FK_LSHIFT, true);
-  } else if (phase == 4) {
+  else if (phase == 6) {
     nes.setFamiKey(key, false);
     nes.setFamiKey(FK_LSHIFT, false);
+  } else if (phase >= (key == FK_RETURN ? 42 : 10) - 1) {
     s_famiTyping = s_famiTyping.substring(1);
+    s_famiTypingFrame = 0;
   }
 }
 
@@ -2658,6 +2662,7 @@ static void runGame()
   s_micState = false;
   releaseFamiKeys();
   s_famiTyping = String();
+  s_famiTypingFrame = 0;
   s_famiMode = false;
   if (nes.famiKeyboard())
     setFamiMode(true);

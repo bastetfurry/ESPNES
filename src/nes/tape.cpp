@@ -263,6 +263,9 @@ void Tape::rebase(int32_t cycles)
     if (m_lastEdge < -MAX_GAP)
       m_lastEdge = -MAX_GAP;
   } else if (m_mode == PLAYING) {
+    // the tape runs on whether the game reads it or not
+    while (m_next <= cycles && m_mode == PLAYING)
+      advance();
     m_next -= cycles;
   }
 }

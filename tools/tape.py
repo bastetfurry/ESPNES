@@ -67,6 +67,34 @@ def parse(image):
     return level, clock, runs
 
 
+def encode(level, clock, runs):
+    """A tape image from runs [(a, b, n), ...] (the inverse of parse)."""
+    out = bytearray(b"FTAP" + bytes([1, level]) + struct.pack("<I", clock))
+    recent = []
+
+    def varint(v):
+        while v >= 0x80:
+            out.append(v & 0x7f | 0x80)
+            v >>= 7
+        out.append(v)
+
+    for a, b, n in runs:
+        period = (a, b)
+        i = recent.index(period) if period in recent else RECENT
+        out.append(i << 4 | (n - 1 if n <= 15 else 15))
+        if i == RECENT:
+            varint(a)
+            varint(b)
+        if n > 15:
+            varint(n)
+        if i < RECENT:
+            recent.pop(i)
+        elif len(recent) == RECENT:
+            recent.pop()
+        recent.insert(0, period)
+    return bytes(out)
+
+
 def info(path):
     image = open(path, "rb").read()
     level, clock, runs = parse(image)
@@ -119,6 +147,9 @@ class Board:
         self.s.dtr = True
         self.s.rts = True
         self.s.open()
+        # the USB serial chip can garble what is sent right after the port opens
+        time.sleep(0.2)
+        self.s.reset_input_buffer()
         self.buf = b""
 
     def send(self, data):

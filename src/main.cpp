@@ -3554,7 +3554,7 @@ static void aboutScreen()
   put(0, 16, "should ask for a refund");
   put(0, 17, "immediately!");
   put(0, 19, "Source and more information:");
-  put(0, 20, "github.com/bastetfurry/espnes", CYAN);
+  put(0, 20, "github.com/bastetfurry/ESPNES", CYAN);
   put(0, 22, "FabGL and DBOPL used under");
   put(0, 23, "the GPL licence.");
   put(0, 24, "See the github page for details!");

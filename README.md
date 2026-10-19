@@ -12,7 +12,7 @@ The games are built into the firmware.
 - NSF music with all six expansion chips (VRC6, VRC7, FDS, MMC5, Namco 163, Sunsoft 5B).
 - The Famicom side: the Family BASIC keyboard, the Data Recorder, the microphone.
 
-Source and more information: [github.com/bastetfurry/espnes](https://github.com/bastetfurry/espnes)
+Source and more information: [github.com/bastetfurry/ESPNES](https://github.com/bastetfurry/ESPNES)
 
 ## Why?
 

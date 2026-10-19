@@ -396,6 +396,19 @@ abort); F1 switches between the two, the choice stays until the next power on. A
   Action Replay; from `$8000` a ROM patch as above) or `AAAA VV CC` (a ROM patch only where the ROM
   holds `CC`). Action Replay's `AAAA:VV` and `00AAAAVV` work too.
 
+### Cheat search
+
+Select in the cheat list opens the search, while the game runs (opened from the system menu, or
+from the main menu for the paused game). It looks at the console's RAM and the save RAM, 10240
+bytes, as an Action Replay does: New Search takes all of them, then each step keeps those whose
+value now is equal to a value (Left/Right sets it), greater or less than at the last step, changed
+or unchanged. Between the steps the game runs on (lose a life, then "Less than last"). With 24 or
+fewer left, Show Results lists them with their value at the last step and now; A makes a cheat of
+one, the address with its value now, in the entry box. The search stays until End Search, or until
+another game is started or the game is quit. It uses about 11 KB, the memory the tape would use:
+while it runs the tape does not play, record or load, and starting one erases a tape that is in
+(after asking).
+
 The codes that are on are on when the game starts; F10 switches them all off and on (shown briefly
 on screen). They are kept in SPIFFS next to the save games (`.cht`, a line per code: on, code and
 comment, separated by tabs). Over serial the list takes the pad's letters; in the box, characters

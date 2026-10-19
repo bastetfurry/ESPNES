@@ -55,6 +55,8 @@ public:
   // of the room there is; else the place in the image (0: at the start) of its size
   size_t   position() const                  { return m_mode == RECORDING ? m_size : m_mode == PLAYING || m_resume ? m_pos : 0; }
   size_t   length() const                    { return m_mode == RECORDING ? m_capacity : m_size; }
+  // no tape any more: its memory is freed
+  void     eject();
   // back to the start: the next play() starts there (it goes on from where stop() was otherwise)
   void     rewind()                          { stop(); m_resume = false; m_elapsed = 0; }
 

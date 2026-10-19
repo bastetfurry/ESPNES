@@ -28,6 +28,16 @@ uint8_t * Tape::loadBuffer(size_t capacity)
 }
 
 
+void Tape::eject()
+{
+  stop();
+  m_resume = false;
+  free(m_data);
+  m_data = nullptr;
+  m_size = m_capacity = 0;
+}
+
+
 char const * Tape::load(uint8_t const * image, size_t size)
 {
   if (image) {

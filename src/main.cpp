@@ -197,7 +197,8 @@ static void listRoms()
 static fabgl::Canvas * s_canvas;
 
 static String savePathFor(RomBlob const & rom, char const * ext = ".sav");
-static void   editCheats(RomBlob const & rom);
+static void   editCheats(RomBlob const & rom, bool running);
+static void   endSearch();
 struct CheatEntry {
   bool   on;
   String code, comment;
@@ -1566,6 +1567,7 @@ static bool           s_nsfFresh;              // music just started (loadRom): 
 // Returns nullptr or an error message.
 static char const * loadRom(RomBlob const & rom)
 {
+  endSearch();                      // it was the game before's
   // the image stays in flash: the cartridge reads it in place
   if (char const * err = nes.insert(rom.data, rom.size))
     return err;
@@ -1653,6 +1655,22 @@ static void toggleCheats()
 // and 'U', the size, a newline and the image in hex put one in.
 
 static Tape                   s_tape;
+
+// A cheat search in progress (see "the cheat search"): it has the memory the tape would use, so
+// while it runs the tape refuses to play, record or load.
+struct CheatSearch {
+  static constexpr int SIZE = 2048 + Nes::PRG_RAM_SIZE;   // console RAM, then save RAM
+  uint8_t last[SIZE];              // the values at the last step
+  uint8_t alive[SIZE / 8];         // still candidates, a bit each
+  int     count;
+};
+static CheatSearch * s_search;
+
+static void endSearch()
+{
+  free(s_search);
+  s_search = nullptr;
+}
 static constexpr size_t       TAPE_MAX = 32 * 1024;     // the longest recording, if memory allows
 
 static void sendTape()
@@ -1694,6 +1712,10 @@ static void tapeStop()
 
 static void tapePlay()
 {
+  if (s_search) {
+    showOverlay("TAPE: CHEAT SEARCH ON");
+    return;
+  }
   if (s_tape.mode() == Tape::RECORDING)
     tapeStop();
   if (s_tape.empty()) {
@@ -1707,6 +1729,10 @@ static void tapePlay()
 
 static void tapeRecord()
 {
+  if (s_search) {
+    showOverlay("TAPE: CHEAT SEARCH ON");
+    return;
+  }
   // leave room for the file system's buffers and the menu's pictures
   size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
   size_t capacity = std::min(TAPE_MAX, largest > 24 * 1024 ? largest - 24 * 1024 : 0);
@@ -1750,6 +1776,10 @@ static bool readHex(uint8_t * p, long size)
 static void receiveTape()
 {
   long size = Serial.parseInt();
+  if (s_search) {
+    Serial.println("Tape: refused, a cheat search runs");
+    return;
+  }
   if (size <= 0 || size > (long) TAPE_MAX) {
     Serial.println("Tape: bad size");
     return;
@@ -2868,9 +2898,220 @@ static bool cheatEntry(CheatEntry * e)
 }
 
 
+// The cheat search (see CheatSearch): console RAM and save RAM, a byte each, narrowed down step by
+// step while the game runs in between. A step compares every candidate's value now with the one
+// at the last step (or with a value) and keeps those that match.
+
+enum class SearchOp { EQUAL, GREATER, LESS, CHANGED, UNCHANGED };
+
+static uint8_t & searchByte(int i)
+{
+  return i < 2048 ? nes.ram[i] : nes.prgRam[i - 2048];
+}
+
+static uint16_t searchAddr(int i)
+{
+  return i < 2048 ? i : 0x6000 + i - 2048;
+}
+
+static bool searchAlive(int i)
+{
+  return s_search->alive[i >> 3] & (1 << (i & 7));
+}
+
+
+static void searchStep(SearchOp op, uint8_t value)
+{
+  CheatSearch & s = *s_search;
+  s.count = 0;
+  for (int i = 0; i < CheatSearch::SIZE; ++i) {
+    if (!searchAlive(i))
+      continue;
+    uint8_t now = searchByte(i), last = s.last[i];
+    bool keep = false;
+    switch (op) {
+      case SearchOp::EQUAL:     keep = now == value; break;
+      case SearchOp::GREATER:   keep = now > last; break;
+      case SearchOp::LESS:      keep = now < last; break;
+      case SearchOp::CHANGED:   keep = now != last; break;
+      case SearchOp::UNCHANGED: keep = now == last; break;
+    }
+    if (keep) {
+      s.last[i] = now;
+      ++s.count;
+    } else {
+      s.alive[i >> 3] &= ~(1 << (i & 7));
+    }
+  }
+}
+
+
+// The search's results, 24 at most: A makes a cheat of one (the address and its value now) in the
+// list. B goes back.
+static void searchResults(RomBlob const & rom, std::vector<CheatEntry> & list)
+{
+  using namespace ui;
+  int found[CHEAT_ROWS], n = 0;
+  for (int i = 0; i < CheatSearch::SIZE && n < CHEAT_ROWS; ++i)
+    if (searchAlive(i))
+      found[n++] = i;
+  int sel = 0;
+  for (;;) {
+    clear();
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    put(1, 0, "Search Results", GREEN);
+    char text[33];
+    snprintf(text, sizeof(text), "%d found", n);
+    put(COLS - 1 - strlen(text), 0, text, YELLOW);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+    for (int r = 0; r < n; ++r) {
+      bool on = r == sel;
+      uint8_t bg = on ? SEL_BG : BLACK, fg = on ? SEL_TEXT : TEXT;
+      fill(0, 2 + r, COLS, 1, ' ', fg, bg);
+      snprintf(text, sizeof(text), "%04X  %02X > %02X", searchAddr(found[r]), s_search->last[found[r]], searchByte(found[r]));
+      put(1, 2 + r, text, fg, bg);
+    }
+    box(0, ROWS - 4, COLS, 5);
+    hint(1, ROWS - 3, "^v: Move Crsr    A: Make Cheat");
+    hint(24, ROWS - 2, "B: Back");
+    flush();
+
+    switch (menuKey()) {
+      case MK_UP:   if (n) sel = (sel + n - 1) % n; break;
+      case MK_DOWN: if (n) sel = (sel + 1) % n; break;
+      case MK_B: case MK_START: case MK_ESC:
+        return;
+      case MK_A: {
+        if (!n)
+          break;
+        if ((int) list.size() >= Nes::MAX_CHEATS) {
+          message(BAD, "The cheat list is full");
+          break;
+        }
+        char code[12];
+        snprintf(code, sizeof(code), "%04X %02X", searchAddr(found[sel]), searchByte(found[sel]));
+        CheatEntry e { true, code, "" };
+        if (cheatEntry(&e)) {
+          list.push_back(e);
+          message(GOOD, "Cheat added");
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+
+// The search box over the cheat list (Select there, while the game runs).
+static void cheatSearch(RomBlob const & rom, std::vector<CheatEntry> & list)
+{
+  using namespace ui;
+  static constexpr int COL = 0, ROW = 8, W = COLS, H = 14, ITEMS = 8;
+  static char const * const names[ITEMS] = { "New Search", "Equal to", "Greater than last", "Less than last",
+                                             "Changed", "Unchanged", "Show Results", "End Search" };
+  static int value = 0;
+  int sel = 0;
+  auto enabled = [&](int i) {
+    if (i == 0)
+      return true;
+    if (!s_search)
+      return false;
+    return i != 6 || (s_search->count > 0 && s_search->count <= CHEAT_ROWS);
+  };
+
+  for (;;) {
+    box(COL, ROW, W, H);
+    put(COL + 1, ROW + 1, "Cheat Search", GREEN);
+    char text[33];
+    if (s_search) {
+      snprintf(text, sizeof(text), "%d found", s_search->count);
+      put(COL + W - 2 - strlen(text), ROW + 1, text, YELLOW);
+    }
+    divider(COL, ROW + 2, W);
+    for (int i = 0; i < ITEMS; ++i) {
+      bool on = i == sel, ok = enabled(i);
+      uint8_t bg = on ? SEL_BG : BLACK, fg = on ? SEL_TEXT : ok ? TEXT : GREY;
+      fill(COL + 1, ROW + 3 + i, W - 2, 1, ' ', fg, bg);
+      put(COL + 2, ROW + 3 + i, names[i], fg, bg);
+      if (i == 1) {
+        snprintf(text, sizeof(text), "[$%02X]", value);
+        put(COL + 19, ROW + 3 + i, text, fg, bg);
+      }
+    }
+    divider(COL, ROW + H - 3, W);
+    hint(COL + 1, ROW + H - 2, "<>^v: Crsr   A: OK    B: Back");
+    flush();
+
+    MenuKey key = menuKey();
+    switch (key) {
+      case MK_UP:   do sel = (sel + ITEMS - 1) % ITEMS; while (!enabled(sel)); break;
+      case MK_DOWN: do sel = (sel + 1) % ITEMS; while (!enabled(sel)); break;
+      case MK_LEFT: case MK_RIGHT:
+        if (sel == 1)
+          value = (value + (key == MK_LEFT ? 255 : 1)) & 255;
+        break;
+      case MK_B: case MK_START: case MK_ESC:
+        return;
+      case MK_A:
+        switch (sel) {
+          case 0: {
+            if (!s_search) {
+              // it takes the tape's memory
+              if (!s_tape.empty() && !confirm("This erases the tape.\nStart the search?"))
+                break;
+              s_tape.eject();
+              s_search = (CheatSearch *) malloc(sizeof(CheatSearch));
+              if (!s_search) {
+                message(BAD, "Not enough memory");
+                break;
+              }
+            }
+            for (int i = 0; i < CheatSearch::SIZE; ++i)
+              s_search->last[i] = searchByte(i);
+            memset(s_search->alive, 0xff, sizeof(s_search->alive));
+            s_search->count = CheatSearch::SIZE;
+            message(NEUTRAL, "Search started");
+            break;
+          }
+          case 1: case 2: case 3: case 4: case 5: {
+            static const SearchOp ops[] = { SearchOp::EQUAL, SearchOp::GREATER, SearchOp::LESS,
+                                            SearchOp::CHANGED, SearchOp::UNCHANGED };
+            searchStep(ops[sel - 1], value);
+            snprintf(text, sizeof(text), "%d left", s_search->count);
+            Serial.printf("Search: %s\n", text);
+            message(s_search->count ? NEUTRAL : BAD, text);
+            if (s_search->count && s_search->count <= CHEAT_ROWS)
+              sel = 6;                // the results are next
+            break;
+          }
+          case 6:
+            searchResults(rom, list);
+            invalidate();
+            return;
+          case 7:
+            free(s_search);
+            s_search = nullptr;
+            sel = 0;
+            message(NEUTRAL, "Search ended");
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+
 // The cheat list: Up/Down select, A edits (on NEW: a new code), B switches one on and off, B+Right
-// (or Delete) deletes it, Start (Esc) goes back. Changes are written when leaving.
-static void editCheats(RomBlob const & rom)
+// (or Delete) deletes it, Select opens the search (only while the game runs), Start (Esc) goes
+// back. Changes are written when leaving.
+static void editCheats(RomBlob const & rom, bool running)
 {
   using namespace ui;
   std::vector<CheatEntry> list, before;
@@ -2919,6 +3160,8 @@ static void editCheats(RomBlob const & rom)
     hint(1, ROWS - 3, "^v: Move Crsr          A: Edit");
     hint(1, ROWS - 2, "B: Toggle          B+>: Delete");
     hint(1, ROWS - 1, "Select: Search     Start: Back");
+    if (!running)                     // the search needs the game in the console
+      put(1, ROWS - 1, "Select: Search", GREY);
     flush();
 
     MenuKey key = menuKey();
@@ -2956,7 +3199,12 @@ static void editCheats(RomBlob const & rom)
         break;
       }
       case MK_SELECT:
-        message(NEUTRAL, "The search comes next");
+        if (!running) {
+          message(BAD, "The game is not running");
+          break;
+        }
+        cheatSearch(rom, list);
+        invalidate();
         break;
       case MK_START: case MK_ESC:
         if (changed()) {
@@ -3385,7 +3633,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
             *slot = loadChoice;
             return true;
           case Opt::CHEATS:
-            editCheats(rom);
+            editCheats(rom, selected == s_paused);
             if (selected == s_paused)
               applyCheats(rom);
             ui::invalidate();
@@ -3413,6 +3661,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
           case Opt::QUIT:
             if (confirm("Quit the\nrunning game?")) {
               s_paused = -1;
+              endSearch();
               ui::message(ui::NEUTRAL, "Game quit");
               return false;
             }
@@ -3692,7 +3941,7 @@ static bool systemMenu()
         return false;
       }
       case SysAction::CHEATS:
-        editCheats(rom);
+        editCheats(rom, true);
         applyCheats(rom);
         screen();
         break;
@@ -3705,8 +3954,16 @@ static bool systemMenu()
       case SysAction::TAPE:
         // play and record go back to the game, stop and rewind stay
         switch (tapeChoice) {
-          case 0: tapePlay(); return false;
-          case 1: tapeRecord(); return false;
+          case 0: case 1:
+            if (s_search) {
+              ui::message(ui::BAD, "End the cheat search first");
+              break;
+            }
+            if (tapeChoice == 0)
+              tapePlay();
+            else
+              tapeRecord();
+            return false;
           case 2: tapeStop(); break;
           case 3: s_tape.rewind(); showTapeState("REWOUND"); break;
         }

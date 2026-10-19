@@ -2365,7 +2365,8 @@ static void runGame()
       }
       static char const keys[] = "abesudlr";
       if (char const * k = strchr(keys, c)) {
-        serialButtons = 1 << (k - keys);
+        // taps close together add up: "abes" holds all four
+        serialButtons = (serialFrames ? serialButtons : 0) | 1 << (k - keys);
         serialFrames = 10;
       }
     }
@@ -2492,12 +2493,22 @@ enum MenuKey { MK_NONE, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_A, MK_B, MK_START,
 static int s_serialRom;              // MK_ROM: the game's number sent over serial
 static uint8_t s_menuPads;           // the real pads' buttons as last seen, for new presses
 
-// A menu opens: buttons held now (the pad's menu combination) are not presses for it.
+static fabgl::VirtualKey s_menuHeld[2 * PAD_KEYS];   // keys held when a menu opened
+static int s_menuHeldCount;
+
+// A menu opens: buttons held now (the pad's menu combination) are not presses for it, also not
+// the keyboard's repeats of their keys, until they are let go.
 static void menuKeyStart()
 {
   uint8_t hw[2];
   readHardwarePads(hw);
   s_menuPads = filterPad(hw[0] | hw[1]);
+  auto kb = PS2.keyboard();
+  s_menuHeldCount = 0;
+  for (int p = 0; p < 2; ++p)
+    for (int b = 0; b < PAD_KEYS; ++b)
+      if (s_padKeys[p][b] != fabgl::VK_NONE && kb->isVKDown(s_padKeys[p][b]))
+        s_menuHeld[s_menuHeldCount++] = s_padKeys[p][b];
 }
 
 // The framebuffer to the serial console, a line of 256 characters '0' + raw pixel & 63 each
@@ -2525,7 +2536,18 @@ static MenuKey menuKey()
   for (uint32_t start = millis(); millis() - start < 100; ) {
     if (kb->virtualKeyAvailable()) {
       fabgl::VirtualKeyItem item;
-      if (!kb->getNextVirtualKey(&item, 0) || !item.down)
+      if (!kb->getNextVirtualKey(&item, 0))
+        continue;
+      // a key held since the menu opened: its repeats are no presses, its release ends that
+      bool held = false;
+      for (int i = 0; i < s_menuHeldCount; ++i)
+        if (s_menuHeld[i] == canonKey(positionKey(item))) {
+          held = true;
+          if (!item.down)
+            s_menuHeld[i] = s_menuHeld[--s_menuHeldCount];
+          break;
+        }
+      if (held || !item.down)
         continue;
       using namespace fabgl;
       switch (item.vk) {

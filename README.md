@@ -379,6 +379,18 @@ Save files are named after the start of the ROM's name plus the CRC32 of its con
 renaming a ROM keeps its save. Some games (Zelda) also use that RAM as working memory, so it
 changes every session and gets written on every return to the list.
 
+## Memory editor and file viewer
+
+Edit Memory, in the system menu or the main menu's options for the paused game, shows the
+console's memory 8 bytes a line: Console RAM, SRAM, PPU VRAM (the nametables), PPU Palette, OAM
+and, for games with it, CHR-RAM; Select picks the region. Left/Right move a byte, Up/Down a line,
+B+Up/Down (or Page Up/Down) a page. A edits the selected byte: Left/Right change it by $01,
+Up/Down by $10, A writes it, B leaves it as it was. The game waits meanwhile and goes on with what
+was written.
+
+A in the file manager shows the selected file the same way, read only (states are compressed, so
+they look like noise; a save is the game's RAM as it is).
+
 ## Cheat codes
 
 Cheats, in the main menu's options or the system menu, opens the game's codes (up to 24): each

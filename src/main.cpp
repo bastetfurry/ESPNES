@@ -3018,6 +3018,153 @@ static void editCheats(RomBlob const & rom, bool running)
 }
 
 
+// The memory editor and the file viewer (see MenuMockup.txt): 8 bytes a line, 25 lines. Left/
+// Right move a byte, Up/Down a line, B+Up/Down (or Page Up/Down) a page. In the editor A edits
+// the selected byte (Left/Right -/+ $01, Up/Down -/+ $10, A writes it, B leaves it as it was) and
+// Select picks the region; the game waits meanwhile and goes on with what was written.
+
+struct HexRegion {
+  char const * name;
+  uint8_t *    data;
+  int          size;
+  uint32_t     base;               // the address shown for the first byte
+};
+
+static void hexView(char const * title, HexRegion const * regions, int regionCount, bool editable)
+{
+  using namespace ui;
+  static constexpr int LINES = 25, PAGE = LINES * 8;
+  int region = 0, cursor = 0, top = 0;
+  bool editing = false;
+  uint8_t edit = 0;
+  invalidate();
+  menuKeyStart();
+  messageArea(0, COLS);
+
+  for (;;) {
+    HexRegion const & r = regions[region];
+    cursor = std::max(0, std::min(cursor, r.size - 1));
+    if (cursor < top)
+      top = cursor & ~7;
+    if (cursor >= top + PAGE)
+      top = (cursor & ~7) - PAGE + 8;
+    bool wide = r.base + r.size > 0x10000;       // a 5th address digit
+
+    clear();
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    put(1, 0, title, GREEN);
+    char text[40];
+    snprintf(text, sizeof(text), "%.18s", r.name);
+    put(COLS - 1 - strlen(text), 0, text, YELLOW);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+    if (!r.size)
+      put(1, 2, "(empty)", GREY);
+    for (int l = 0; l < LINES && top + l * 8 < r.size; ++l) {
+      int at = top + l * 8;
+      snprintf(text, sizeof(text), wide ? "%05X" : " %04X", (unsigned)(r.base + at));
+      put(0, 2 + l, text, GREY);
+      for (int i = 0; i < 8 && at + i < r.size; ++i) {
+        bool sel = at + i == cursor;
+        uint8_t v = sel && editing ? edit : r.data[at + i];
+        snprintf(text, sizeof(text), "%02X", v);
+        put(6 + 3 * i, 2 + l, text, sel ? (editing ? BRIGHT : SEL_TEXT) : TEXT, sel ? (editing ? RED : SEL_BG) : BLACK);
+      }
+    }
+    if (top > 0)
+      putc(COLS - 2, 1, G_UP, TEXT);
+    box(0, ROWS - 3, COLS, 4);       // its bottom line is off the screen
+    if (top + PAGE < r.size)
+      putc(COLS - 2, ROWS - 3, G_DOWN, TEXT);
+    if (editing) {
+      hint(1, ROWS - 2, "<>:+-$01 ^v:+-$10        A: OK");
+      hint(24, ROWS - 1, "B: Abort");
+    } else {
+      hint(1, ROWS - 2, editable ? "<>^v: Move Crsr        A: Edit" : "<>^v: Move Crsr");
+      hint(editable ? 1 : 20, ROWS - 1, editable ? "Select: Region     Start: Back" : "Start: Back");
+    }
+    flush();
+
+    MenuKey key = menuKey();
+    if (editing) {
+      switch (key) {
+        case MK_LEFT:  --edit; break;
+        case MK_RIGHT: ++edit; break;
+        case MK_UP:    edit -= 0x10; break;
+        case MK_DOWN:  edit += 0x10; break;
+        case MK_A:
+          r.data[cursor] = edit;
+          editing = false;
+          break;
+        case MK_B: case MK_ESC:
+          editing = false;
+          break;
+        default:
+          break;
+      }
+      continue;
+    }
+    bool page = buttonHeld(BTN_B);
+    switch (key) {
+      case MK_LEFT:     --cursor; break;
+      case MK_RIGHT:    ++cursor; break;
+      case MK_UP:       cursor -= page ? PAGE : 8; break;
+      case MK_DOWN:     cursor += page ? PAGE : 8; break;
+      case MK_PAGEUP:   cursor -= PAGE; break;
+      case MK_PAGEDOWN: cursor += PAGE; break;
+      case MK_A:
+        if (editable && r.size) {
+          editing = true;
+          edit = r.data[cursor];
+        }
+        break;
+      case MK_SELECT:
+        if (editable && regionCount > 1) {
+          region = (region + 1) % regionCount;
+          cursor = top = 0;
+        }
+        break;
+      case MK_START: case MK_ESC:
+        return;
+      default:
+        break;
+    }
+  }
+}
+
+
+// the memory editor over the game in the console
+static void memoryEditor()
+{
+  HexRegion regions[6];
+  int n = 0;
+  regions[n++] = { "Console RAM", nes.ram, (int) sizeof(nes.ram), 0x0000 };
+  regions[n++] = { "SRAM", nes.prgRam, Nes::PRG_RAM_SIZE, 0x6000 };
+  regions[n++] = { "PPU VRAM", nes.ppu.vram, (int) sizeof(nes.ppu.vram), 0x2000 };
+  regions[n++] = { "PPU Palette", nes.ppu.palette, (int) sizeof(nes.ppu.palette), 0x3F00 };
+  regions[n++] = { "OAM", nes.ppu.oam, (int) sizeof(nes.ppu.oam), 0x0000 };
+  if (nes.chrRam())
+    regions[n++] = { "CHR-RAM", nes.chrRam(), 0x2000, 0x0000 };
+  hexView("Memory Edit", regions, n, true);
+}
+
+
+// the file viewer, from the file manager; name: what to show it as
+static void fileViewer(SpiffsFile const & f, String const & name)
+{
+  std::vector<uint8_t> data(f.size);
+  File file = SPIFFS.open(f.path, "r");
+  if (!file || file.read(data.data(), data.size()) != data.size()) {
+    ui::message(ui::BAD, "Could not read it");
+    return;
+  }
+  HexRegion region = { name.c_str(), data.data(), (int) data.size(), 0 };
+  hexView("File Viewer", &region, 1, false);
+}
+
+
 // what a file is, as the tag before it, from its name
 static char const * fileTag(String const & path)
 {
@@ -3128,7 +3275,8 @@ static void fileManager()
         if (!n)
           break;
         if (key == MK_A && !select) {
-          message(NEUTRAL, "The viewer comes next");
+          fileViewer(files[sel], String("[") + fileTag(files[sel].path) + "] " + owner(files[sel]));
+          invalidate();
           break;
         }
         snprintf(text, sizeof(text), "Delete [%s] of\n%.24s?", fileTag(files[sel].path), owner(files[sel]).c_str());
@@ -3489,7 +3637,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
       case Opt::SAVE:   return s_paused == selected && !facts.music;
       case Opt::LOAD:   return facts.slots[0] || facts.slots[1];
       case Opt::CHEATS: return !facts.music;
-      case Opt::MEMORY: return false;                // to come
+      case Opt::MEMORY: return s_paused == selected && !facts.music;
       case Opt::QUIT:   return s_paused >= 0;
       default:          return true;
     }
@@ -3591,6 +3739,10 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
             break;
           case Opt::TV:
             s_regionChoice = (RegionChoice)(((int) s_regionChoice + 1) % 3);
+            break;
+          case Opt::MEMORY:
+            memoryEditor();
+            ui::invalidate();
             break;
           case Opt::JOYPAD: {
             char const * msg = editPadKeys();
@@ -3715,7 +3867,7 @@ static bool systemMenu()
       case SysAction::SAVE:   return !music;
       case SysAction::LOAD:   return slots[0] || slots[1];
       case SysAction::CHEATS: return !music;
-      case SysAction::MEMORY: return false;              // to come
+      case SysAction::MEMORY: return !music;
       default:                return true;
     }
   };
@@ -3892,6 +4044,10 @@ static bool systemMenu()
       case SysAction::CHEATS:
         editCheats(rom, true);
         applyCheats(rom);
+        screen();
+        break;
+      case SysAction::MEMORY:
+        memoryEditor();
         screen();
         break;
       case SysAction::SRAM: {

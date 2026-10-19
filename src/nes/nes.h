@@ -202,6 +202,7 @@ public:
   uint8_t         ram[2048];
   uint8_t const * prgMap[4];      // 8 KB pages at $8000, $A000, $C000, $E000
   uint8_t *       prgRam;         // 8 KB at $6000, battery backed on some carts
+  uint8_t *       chrRam() const { return m_chrRam; }   // 8 KB CHR RAM, or nullptr (CHR ROM)
   uint8_t         bus = 0;        // the last value on the CPU data bus (open bus)
   static constexpr int PRG_RAM_SIZE = 0x2000;
 

@@ -42,7 +42,7 @@ void fill(int col, int row, int w, int h, uint8_t ch = ' ', uint8_t fg = TEXT, u
 void box(int col, int row, int w, int h);
 // a line across a box, joined to its sides
 void divider(int col, int row, int w);
-// usage hints, "A: OK  B: Back": the word before each ':' in red, the rest in white
+// usage hints, "A: OK  B: Back": in each word what is before a ':' in red, the rest in white
 void hint(int col, int row, char const * text, uint8_t bg = BLACK);
 // cells a picture is drawn over; flush leaves them alone and tells when they need the picture again
 void picture(int col, int row, int w, int h);

@@ -98,14 +98,16 @@ void divider(int col, int row, int w)
 
 void hint(int col, int row, char const * text, uint8_t bg)
 {
-  // a word that ends in ':' is a button
+  // in a word with a ':', what is before it is a button ("A: OK", "<>:+-$01")
   for (char const * p = text; *p; ) {
-    char const * end = p;
-    while (*end && *end != ' ')
+    char const * end = p, * colon = nullptr;
+    while (*end && *end != ' ') {
+      if (*end == ':' && !colon && end > p)
+        colon = end;
       ++end;
-    bool button = end > p && end[-1] == ':';
+    }
     for (; p < end; ++p, ++col)
-      putc(col, row, (uint8_t) *p, button && p < end - 1 ? RED : TEXT, bg);
+      putc(col, row, (uint8_t) *p, colon && p < colon ? RED : TEXT, bg);
     for (; *p == ' '; ++p, ++col)
       putc(col, row, ' ', TEXT, bg);
   }

@@ -227,14 +227,16 @@ static bool unpackPicture(RomBlob const & rom, PictureUnpack * u)
 
 
 // straight into the frame buffer; call once the canvas has finished drawing
-static void drawPicture(int idx, int left, int top)
+// masked: only where the menu's grid shows the picture (not under a popup)
+static void drawPicture(int idx, int left, int top, bool masked = false)
 {
   auto * u = (PictureUnpack *) malloc(sizeof(PictureUnpack));
   uint8_t const * pic = u && unpackPicture(g_roms[idx], u) ? u->pixels : nullptr;
   for (int y = 0; y < PICTURE_SIZE; ++y) {
     uint8_t * line = s_lines[top + y];
     for (int x = 0; x < PICTURE_SIZE; ++x)   // the DMA's byte order
-      line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
+      if (!masked || ui::pictureShown(left + x, top + y))
+        line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
   free(u);
 }
@@ -3335,7 +3337,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
     ui::divider(COL, ROW + H - 3, W);
     ui::hint(COL + 2, ROW + H - 2, "A: OK B: Back");
     if (ui::flush())                  // back from a screen of its own
-      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8);
+      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8, true);
 
     MenuKey key = menuKey();
     Opt o = items[sel];
@@ -3447,7 +3449,7 @@ static int chooseRom(int * slot)
       gatherFacts(selected, facts);
     drawMainMenu(selected, top, facts);
     if ((ui::flush() || shownPicture != selected) && n) {
-      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8);
+      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8, true);
       shownPicture = selected;
     }
 

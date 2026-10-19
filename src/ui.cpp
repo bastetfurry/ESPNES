@@ -121,6 +121,12 @@ void picture(int col, int row, int w, int h)
 }
 
 
+bool pictureShown(int x, int y)
+{
+  return x >= 0 && x < COLS * 8 && y >= 0 && y < ROWS * 8 && s_shown[y / 8][x / 8].attr == PICTURE;
+}
+
+
 static void drawCell(int col, int row, Cell c)
 {
   uint8_t fg = s_raw[c.attr & 15], bg = s_raw[c.attr >> 4];

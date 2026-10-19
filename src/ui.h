@@ -47,6 +47,9 @@ void hint(int col, int row, char const * text, uint8_t bg = BLACK);
 // cells a picture is drawn over; flush leaves them alone and tells when they need the picture again
 void picture(int col, int row, int w, int h);
 
+// whether a cell is a picture's on the monitor (not covered by a popup), in pixels
+bool pictureShown(int x, int y);
+
 // Draws what changed. Returns true when picture cells were covered by something else before, so
 // their picture is to be drawn again (also after invalidate()).
 bool flush();

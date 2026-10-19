@@ -205,7 +205,7 @@ struct CheatEntry {
 };
 static void   loadCheats(RomBlob const & rom, std::vector<CheatEntry> & list);
 static char const * editPadKeys();
-static char const * fileManager();
+static void   fileManager();
 static bool   slotUsed(RomBlob const & rom, int slot);
 static char const * saveSlot(int idx, int slot);
 static void   applyCheats(RomBlob const & rom);
@@ -1062,207 +1062,6 @@ static std::vector<SpiffsFile> listSpiffs()
     return ga != gb ? ga < gb : a.path < b.path;
   });
   return files;
-}
-
-
-// what a file is, from its extension
-static char const * fileKind(String const & path)
-{
-  if (path == KEYS_PATH)          return "Keys";
-  if (path == LAYOUT_PATH)        return "Layout";
-  if (path.endsWith(".sav"))      return "Save";
-  if (path.endsWith(".cht"))      return "Codes";
-  if (path.endsWith(".st1"))      return "State 1";
-  if (path.endsWith(".st2"))      return "State 2";
-  if (path.endsWith(".stn"))      return "State tmp";
-  if (path.endsWith(".tp1"))      return "Tape data 1";
-  if (path.endsWith(".tp2"))      return "Tape data 2";
-  if (path.endsWith(".tp3"))      return "Tape data 3";
-  if (path.endsWith(".tp4"))      return "Tape data 4";
-  return "?";
-}
-
-
-// One line of 32 characters: whose, what, how big.
-static void fileLine(SpiffsFile const & f, char * line)
-{
-  String who;
-  if (f.game >= 0)
-    who = g_roms[f.game].title;
-  else if (f.game == -1)
-    who = f.path.substring(1, f.path.lastIndexOf('.') - 9);   // the stem of the ROM's name
-  else
-    who = f.path == KEYS_PATH ? "Settings" : f.path.substring(1);
-  if (who.length() > 14)
-    who = who.substring(0, 14);
-  char size[8];
-  if (f.size < 1000)
-    snprintf(size, sizeof(size), "%uB", (unsigned) f.size);
-  else
-    snprintf(size, sizeof(size), "%u.%uK", (unsigned)(f.size / 1024), (unsigned)(f.size % 1024 * 10 / 1024));
-  snprintf(line, 33, "%-14s %-9s %6s", who.c_str(), fileKind(f.path), size);
-}
-
-
-// The screen: Up/Down select, Del deletes the selected file, O all files of removed games (both
-// ask first), Esc goes back. Over serial: n/p select, d deletes, o removed games, y/n answer, ~ back.
-static char const * fileManager()
-{
-  static constexpr int TOP = 30, ROWS = 18;
-  fabgl::Canvas & cv = *s_canvas;
-  auto kb = PS2.keyboard();
-  std::vector<SpiffsFile> files = listSpiffs();
-  int selected = 0, top = 0;
-  char const * message = nullptr;
-  bool changed = false;
-
-  for (auto const & f : files) {
-    char line[33];
-    fileLine(f, line);
-    Serial.printf("  %s %s%s\n", line, f.path.c_str(), f.game == -1 ? " (removed game)" : "");
-  }
-
-  cv.setBrushColor(Color::Black);
-  cv.clear();
-  cv.setPenColor(Color::BrightYellow);
-  cv.drawText(0, 4, "FILES");
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 222, "Del:delete O:of removed games");
-  cv.drawText(0, 231, "Esc:back      red: game removed");
-
-  // one key: VK_NONE when there is none yet; serial letters stand for keys
-  auto nextKey = [&]() {
-    fabgl::VirtualKey vk = fabgl::VK_NONE;
-    if (Serial.available()) {
-      switch (Serial.read()) {
-        case 'n': vk = fabgl::VK_DOWN; break;
-        case 'p': vk = fabgl::VK_UP; break;
-        case 'd': vk = fabgl::VK_DELETE; break;
-        case 'o': vk = fabgl::VK_o; break;
-        case 'y': vk = fabgl::VK_y; break;
-        case '~': vk = fabgl::VK_ESCAPE; break;
-        default:  vk = fabgl::VK_n; break;   // anything else answers no
-      }
-    } else if (kb->virtualKeyAvailable()) {
-      // by place, so the keys stay when the layout changes
-      fabgl::VirtualKeyItem item;
-      vk = kb->getNextVirtualKey(&item, 0) && item.down ? positionKey(item) : fabgl::VK_NONE;
-    }
-    if (vk == fabgl::VK_NONE)
-      vTaskDelay(pdMS_TO_TICKS(20));
-    return vk;
-  };
-  auto drawMsg = [&](char const * text) {
-    char line[33];
-    snprintf(line, sizeof(line), "%-32s", text ? text : "");
-    if (text)
-      Serial.printf("Files: %s\n", text);
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(0, 208, line);
-  };
-  auto confirm = [&](char const * question) {
-    drawMsg(question);
-    cv.waitCompletion();
-    for (;;) {
-      auto vk = nextKey();
-      if (vk == fabgl::VK_y || vk == fabgl::VK_Y)
-        return true;
-      if (vk != fabgl::VK_NONE)
-        return false;
-    }
-  };
-  auto remove = [&](SpiffsFile const & f) {
-    s_soundGen->play(false);        // flash writes stop the cache, and the sound interrupt with it
-    bool ok = SPIFFS.remove(f.path);
-    s_soundGen->play(true);
-    Serial.printf("Removed %s: %s\n", f.path.c_str(), ok ? "ok" : "FAILED");
-    if (ok && f.path == KEYS_PATH)
-      loadPadKeys();                // back to the default keys
-    changed |= ok;
-    return ok;
-  };
-
-  for (;;) {
-    // the usage, then the list (every line padded, so nothing needs clearing)
-    char line[33];
-    snprintf(line, sizeof(line), "%u of %u KB used", (unsigned)(SPIFFS.usedBytes() / 1024), (unsigned)(SPIFFS.totalBytes() / 1024));
-    snprintf(line, sizeof(line), "%-26s", String(line).c_str());
-    cv.setPenColor(Color::White);
-    cv.drawText(48, 4, line);
-    selected = std::max(0, std::min(selected, (int) files.size() - 1));
-    top = std::max(0, std::min(top, selected));
-    if (selected >= top + ROWS)
-      top = selected - ROWS + 1;
-    for (int r = 0; r < ROWS; ++r) {
-      int i = top + r;
-      bool sel = i == selected;
-      if (i < (int) files.size())
-        fileLine(files[i], line);
-      else
-        snprintf(line, sizeof(line), "%-32s", i == 0 ? "(no files)" : "");
-      cv.setBrushColor(sel && i < (int) files.size() ? Color::Blue : Color::Black);
-      cv.setPenColor(i < (int) files.size() && files[i].game == -1 ? Color::BrightRed :
-                     sel ? Color::BrightWhite : Color::White);
-      cv.drawText(0, TOP + r * 9, line);
-    }
-    cv.setBrushColor(Color::Black);
-    drawMsg(message);
-    cv.waitCompletion();
-    message = nullptr;
-
-    fabgl::VirtualKey vk;
-    while ((vk = nextKey()) == fabgl::VK_NONE)
-      ;
-    switch (vk) {
-      case fabgl::VK_ESCAPE:
-        return changed ? "Files deleted" : nullptr;
-      case fabgl::VK_UP: case fabgl::VK_KP_UP:
-        --selected;
-        break;
-      case fabgl::VK_DOWN: case fabgl::VK_KP_DOWN:
-        ++selected;
-        break;
-      case fabgl::VK_PAGEUP: case fabgl::VK_KP_PAGEUP:
-        selected -= ROWS;
-        break;
-      case fabgl::VK_PAGEDOWN: case fabgl::VK_KP_PAGEDOWN:
-        selected += ROWS;
-        break;
-      case fabgl::VK_DELETE: case fabgl::VK_KP_DELETE: case fabgl::VK_BACKSPACE: {
-        if (files.empty())
-          break;
-        SpiffsFile const & f = files[selected];
-        char question[33];
-        snprintf(question, sizeof(question), "Delete %s? Y/N", f.game >= 0 || f.game == -1 ? fileKind(f.path) : "it");
-        if (confirm(question)) {
-          if (remove(f)) {
-            files.erase(files.begin() + selected);
-            message = "Deleted";
-          } else
-            message = "Could not delete it";
-        }
-        break;
-      }
-      case fabgl::VK_o: case fabgl::VK_O: {
-        int n = std::count_if(files.begin(), files.end(), [](SpiffsFile const & f) { return f.game == -1; });
-        if (!n) {
-          message = "No files of removed games";
-          break;
-        }
-        char question[33];
-        snprintf(question, sizeof(question), "Delete %d file%s of removed? Y/N", n, n == 1 ? "" : "s");
-        if (confirm(question)) {
-          for (int i = files.size() - 1; i >= 0; --i)
-            if (files[i].game == -1 && remove(files[i]))
-              files.erase(files.begin() + i);
-          message = "Deleted";
-        }
-        break;
-      }
-      default:
-        break;
-    }
-  }
 }
 
 
@@ -3219,6 +3018,157 @@ static void editCheats(RomBlob const & rom, bool running)
 }
 
 
+// what a file is, as the tag before it, from its name
+static char const * fileTag(String const & path)
+{
+  static const struct { char const * ext, * tag; } tags[] = {
+    { ".sav", "SRM" }, { ".cht", "CHT" }, { ".st1", "ST1" }, { ".st2", "ST2" }, { ".stn", "TMP" },
+    { ".tp1", "TP1" }, { ".tp2", "TP2" }, { ".tp3", "TP3" }, { ".tp4", "TP4" }, { ".cfg", "CNF" },
+  };
+  for (auto const & t : tags)
+    if (path.endsWith(t.ext))
+      return t.tag;
+  return "???";
+}
+
+
+// The file manager (see MenuMockup.txt): what is in SPIFFS, by game. Up/Down (Left/Right a page)
+// select, A views the file, Select+A (or Delete) deletes it, Select+B deletes all files of games
+// that are no longer built in (red; their names carry a CRC no game has), both after asking.
+// Start or Esc goes back. Select counts as held for a second after it was pressed, so the pair
+// also works one after the other (and over serial).
+static void fileManager()
+{
+  using namespace ui;
+  static constexpr int ROWS_SHOWN = 24;
+  std::vector<SpiffsFile> files = listSpiffs();
+  int sel = 0, top = 0;
+  uint32_t selectAt = 0;
+  bool selectPending = false;
+  invalidate();
+  menuKeyStart();
+  messageArea(0, COLS);
+
+  // whose file it is: the game's name, or what it is
+  auto owner = [](SpiffsFile const & f) {
+    if (f.game >= 0)
+      return String(g_roms[f.game].title);
+    if (f.game == -1)
+      return f.path.substring(1, f.path.lastIndexOf('.') - 9);   // the stem of the ROM's name
+    return f.path == KEYS_PATH ? String("Keys") : f.path == LAYOUT_PATH ? String("Keyboard layout") : f.path.substring(1);
+  };
+  auto remove = [&](SpiffsFile const & f) {
+    s_soundGen->play(false);        // flash writes stop the cache, and the sound interrupt with it
+    bool ok = SPIFFS.remove(f.path);
+    s_soundGen->play(true);
+    Serial.printf("Removed %s: %s\n", f.path.c_str(), ok ? "ok" : "FAILED");
+    if (ok && f.path == KEYS_PATH)
+      loadPadKeys();                // back to the default keys
+    return ok;
+  };
+
+  for (;;) {
+    int n = files.size();
+    sel = std::max(0, std::min(sel, n - 1));
+    top = std::max(0, std::min(top, sel));
+    if (sel >= top + ROWS_SHOWN)
+      top = sel - ROWS_SHOWN + 1;
+
+    clear();
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    put(1, 0, "File Manager", GREEN);
+    char text[40];
+    snprintf(text, sizeof(text), "%03u/%03uKB", (unsigned)(SPIFFS.usedBytes() / 1024), (unsigned)(SPIFFS.totalBytes() / 1024));
+    put(COLS - 1 - strlen(text), 0, text, YELLOW);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+    if (top > 0)
+      putc(COLS - 2, 1, G_UP, TEXT);
+    if (!n)
+      put(1, 2, "(no files)", GREY);
+    for (int r = 0; r < ROWS_SHOWN && top + r < n; ++r) {
+      SpiffsFile const & f = files[top + r];
+      bool on = top + r == sel;
+      uint8_t bg = on ? SEL_BG : BLACK, fg = on ? SEL_TEXT : f.game == -1 ? RED : TEXT;
+      String who = owner(f);
+      char size[8];
+      if (f.size < 1000)
+        snprintf(size, sizeof(size), "%uB", (unsigned) f.size);
+      else
+        snprintf(size, sizeof(size), "%u.%uK", (unsigned)(f.size / 1024), (unsigned)(f.size % 1024 * 10 / 1024));
+      snprintf(text, sizeof(text), "[%s] %-19.19s %6s", fileTag(f.path), who.c_str(), size);
+      put(0, 2 + r, text, fg, bg);
+    }
+    box(0, ROWS - 4, COLS, 5);        // its bottom line is off the screen
+    if (top + ROWS_SHOWN < n)
+      putc(COLS - 2, ROWS - 4, G_DOWN, TEXT);
+    hint(1, ROWS - 3, "^v: Move Crsr          A: View");
+    hint(1, ROWS - 2, "Select+B: Cleanup Unused");
+    hint(1, ROWS - 1, "Select+A: Delete   Start: Back");
+    flush();
+
+    MenuKey key = menuKey();
+    bool select = buttonHeld(BTN_SELECT) || (selectPending && millis() - selectAt < 1000);
+    if (key != MK_NONE && key != MK_SELECT)
+      selectPending = false;
+    switch (key) {
+      case MK_UP:   if (n) sel = (sel + n - 1) % n; break;
+      case MK_DOWN: if (n) sel = (sel + 1) % n; break;
+      case MK_LEFT: case MK_PAGEUP:    sel -= ROWS_SHOWN; break;
+      case MK_RIGHT: case MK_PAGEDOWN: sel += ROWS_SHOWN; break;
+      case MK_SELECT:
+        selectPending = true;
+        selectAt = millis();
+        break;
+      case MK_START: case MK_ESC:
+        return;
+      case MK_A: case MK_DEL:
+        if (!n)
+          break;
+        if (key == MK_A && !select) {
+          message(NEUTRAL, "The viewer comes next");
+          break;
+        }
+        snprintf(text, sizeof(text), "Delete [%s] of\n%.24s?", fileTag(files[sel].path), owner(files[sel]).c_str());
+        if (!confirm(text))
+          break;
+        if (remove(files[sel])) {
+          files.erase(files.begin() + sel);
+          message(GOOD, "File deleted");
+        } else
+          message(BAD, "Could not delete it");
+        break;
+      case MK_B: {
+        if (!select)
+          break;
+        int unused = std::count_if(files.begin(), files.end(), [](SpiffsFile const & f) { return f.game == -1; });
+        if (!unused) {
+          message(NEUTRAL, "No files of removed games");
+          break;
+        }
+        snprintf(text, sizeof(text), "Delete %d file%s of\nremoved games?", unused, unused == 1 ? "" : "s");
+        if (!confirm(text))
+          break;
+        int failed = 0;
+        for (int i = files.size() - 1; i >= 0; --i)
+          if (files[i].game == -1) {
+            if (remove(files[i]))
+              files.erase(files.begin() + i);
+            else
+              ++failed;
+          }
+        message(failed ? BAD : GOOD, failed ? "Some could not be deleted" : "Unused files deleted");
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+
 // the region menu choice's name
 static char const * regionChoiceName()
 {
@@ -3650,8 +3600,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
             break;
           }
           case Opt::FILES:
-            if (fileManager())
-              ui::message(ui::GOOD, "Files deleted");
+            fileManager();
             ui::invalidate();
             gatherFacts(selected, facts);
             break;

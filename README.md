@@ -184,10 +184,13 @@ A state includes the battery backed RAM: after loading one, leaving the game wri
 game's save file, as an emulator does. States belong to this version of the emulator; one made by
 a version with a different state format is refused (`STATE_VERSION` in `src/nes/nes.cpp`).
 
-Files in the options opens the file manager: everything in SPIFFS by game (saves, codes, states, the
-keys) with its size, and how full SPIFFS is. Files of games that are no longer built in are red:
-their names carry the CRC of a ROM no game in the list has. Del deletes the selected file, O all
-files of removed games; both ask first.
+Files in the options opens the file manager: everything in SPIFFS, a line per file with a tag for
+what it is (`[SRM]` save, `[ST1]`/`[ST2]` states, `[TMP]` a state cut off while being written,
+`[CHT]` cheats, `[TP1]`-`[TP4]` tape trap data, `[CNF]` settings, `[???]` anything else), whose it
+is and its size, and at the top how full SPIFFS is. Files of games that are no longer built in are
+red: their names carry the CRC of a ROM no game in the list has. Select+A (or Delete) deletes the
+selected file, Select+B all files of removed games; both ask first. Select also counts for a second
+after it was let go, so the two can be pressed one after the other.
 
 `host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
 same frames again: picture, RAM and CPU must come out the same (all games here do).
@@ -198,7 +201,7 @@ SysRq (Alt+PrtScr) opens the system menu, in every game (see below). Esc belongs
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `a b e s u d l r` are the pad's buttons in the menus as in games (A, B, Select, Start and the directions), `Z` sends a screenshot (`tools/screenshot.py --keys ... out.png` makes a PNG of it, in menus and games). The manual turns pages with `a`/`b` (or `r`/`l`) and leaves with `s`. In the screens opened from the options: the file manager takes `n`/`p` to select, `d` to delete, `o` for the files of removed games, `y` to confirm, `~` to leave; the key mapper `1`/`2` for the player, then a letter, digit or space for the next button, `^` for the player's defaults, `~` to cancel. `q` leaves the game, `y` opens the system menu (it takes the pad's letters as the other menus), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
+that ROM, `a b e s u d l r` are the pad's buttons in the menus as in games (A, B, Select, Start and the directions), `Z` sends a screenshot (`tools/screenshot.py --keys ... out.png` makes a PNG of it, in menus and games). The manual turns pages with `a`/`b` (or `r`/`l`) and leaves with `s`. In the screens opened from the options: the key mapper `1`/`2` for the player, then a letter, digit or space for the next button, `^` for the player's defaults, `~` to cancel. `q` leaves the game, `y` opens the system menu (it takes the pad's letters as the other menus), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
 
 ## ROMs
 

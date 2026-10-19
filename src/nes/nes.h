@@ -148,7 +148,7 @@ public:
   // Game Genie codes patch what the CPU reads from ROM without slowing it down: an 8 KB page a
   // code applies to is copied to RAM, patched, and mapped instead (see patchedPage). Action
   // Replay codes are written to RAM at the start of every frame.
-  static constexpr int MAX_CHEATS = 16;
+  static constexpr int MAX_CHEATS = 24;
   void setCheats(Cheat const * list, int count);
   void enableCheats(bool on);
   bool cheatsEnabled() const                  { return m_cheatsOn; }

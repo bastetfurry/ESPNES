@@ -378,19 +378,29 @@ changes every session and gets written on every return to the list.
 
 ## Cheat codes
 
-Cheats in the main menu's options opens the selected game's codes: type a code and Enter adds it, Up/Down selects,
-Del removes, Esc saves and goes back. Each code shows what it decodes to.
+Cheats, in the main menu's options or the system menu, opens the game's codes (up to 24): each
+with a check mark when on, the code in hex and a comment. Up/Down select, B switches the selected
+code on and off, B+Right (or Delete) deletes it (asks first), A edits it, and A on the last line,
+NEW, adds one. Start or Esc goes back, writing the list only if it changed.
 
-- **Game Genie:** 6 or 8 letters (`SXIOPO`). They patch what the CPU reads from ROM: an 8 KB page a
-  code applies to (for 8 letter codes, only where the ROM holds the compare value) is copied to
-  RAM, patched and mapped in its place, so the CPU's ROM reads stay as fast as without codes. Up
-  to six such pages (48 KB of RAM) at a time.
-- **Action Replay:** a RAM address and value in hex, `AAAA:VV` (also `AAAAVV` or `00AAAAVV`),
-  written at the start of every frame.
+Editing opens a box with the code and a comment (16 characters). It takes the keyboard (Tab
+changes the field, Backspace deletes, Enter is OK, Esc aborts) or the pad on a drawn keyboard
+(A types the key, B deletes, Select changes the field, the check mark and cross keys are OK and
+abort); F1 switches between the two, the choice stays until the next power on. A code can be typed as:
 
-A game's codes are on when it starts; F10 switches them off and on (shown briefly on screen). They
-are saved in SPIFFS next to the save games, only when changed. Over serial: `g` and a number opens
-the editor (characters type, Enter adds, `!` removes, `~` leaves), `c` in a game toggles.
+- **Game Genie:** 6 or 8 letters (`SXIOPO`), turned into hex on OK. They patch what the CPU reads
+  from ROM: an 8 KB page a code applies to (for 8 letter codes, only where the ROM holds the
+  compare value) is copied to RAM, patched and mapped in its place, so the CPU's ROM reads stay
+  as fast as without codes. Up to six such pages (48 KB of RAM) at a time.
+- **Hex:** `AAAA VV` (below `$8000` a RAM address, written at the start of every frame, like the
+  Action Replay; from `$8000` a ROM patch as above) or `AAAA VV CC` (a ROM patch only where the ROM
+  holds `CC`). Action Replay's `AAAA:VV` and `00AAAAVV` work too.
+
+The codes that are on are on when the game starts; F10 switches them all off and on (shown briefly
+on screen). They are kept in SPIFFS next to the save games (`.cht`, a line per code: on, code and
+comment, separated by tabs). Over serial the list takes the pad's letters; in the box, characters
+type, Enter is OK, `~` aborts, `|` changes the field, `^` deletes, `!` switches to the drawn
+keyboard (whose keys are the pad's letters then); `c` in a game switches all codes.
 
 ## Per game settings
 

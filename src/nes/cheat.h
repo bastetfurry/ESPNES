@@ -11,11 +11,12 @@ struct Cheat {
 };
 
 // Decodes a code as typed. Accepted:
-//   Game Genie   6 or 8 letters of APZLGITYEOXUKSVN, e.g. SXIOPO
-//   Action Replay  address and value in hex: AAAA:VV, AAAAVV, or the 8 digit 00AAAAVV form,
-//                  for addresses below $8000 (RAM, save RAM)
-// Spaces and dashes are ignored, letters may be lower case. Returns false if it is neither.
+//   Game Genie     6 or 8 letters of APZLGITYEOXUKSVN, e.g. SXIOPO
+//   hex            AAAA VV (a RAM poke below $8000, a ROM patch from $8000) or AAAA VV CC (a ROM
+//                  patch only where the ROM holds CC); Action Replay's AAAA:VV and 00AAAAVV too
+// Spaces, dashes and colons are ignored, letters may be lower case; a code typed with spaces or
+// colons is read as hex first (EEEEEE is both). Returns false if it is neither.
 bool decodeCheat(char const * text, Cheat * out);
 
-// The code in a canonical form for display and saving (upper case, no separators; AR as AAAA:VV).
-void formatCheat(Cheat const & c, char const * typed, char * out, int outSize);
+// The code in the canonical hex form, for display and saving: "AAAA VV" or "AAAA VV CC".
+void formatCheat(Cheat const & c, char * out, int outSize);

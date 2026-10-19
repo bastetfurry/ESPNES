@@ -21,7 +21,7 @@
 // The main menu (see "the main menu") works with the pad's buttons; Start opens its options
 // (manual, savestates, cheat codes, TV system, keys, files, about). "Main Menu" in the system menu pauses
 // the game; A on the paused game carries on.
-// Serial console: a number starts that ROM from the list, 'q' leaves the game, Z sends a screenshot,
+// Serial console: a number starts that ROM from the list, 'q' leaves the game, Z (or Ctrl+Z) sends a screenshot,
 // and a b e s u d l r tap A, B, sElect, Start and the directions (in the menus too); P R X play, record and stop the tape,
 // U loads one (tools/tape.py), y opens the system menu, T and a line types it on the Famicom keyboard.
 
@@ -198,6 +198,11 @@ static fabgl::Canvas * s_canvas;
 
 static String savePathFor(RomBlob const & rom, char const * ext = ".sav");
 static void   editCheats(RomBlob const & rom);
+struct CheatEntry {
+  bool   on;
+  String code, comment;
+};
+static void   loadCheats(RomBlob const & rom, std::vector<CheatEntry> & list);
 static char const * editPadKeys();
 static char const * fileManager();
 static bool   slotUsed(RomBlob const & rom, int slot);
@@ -239,197 +244,6 @@ static void drawPicture(int idx, int left, int top, bool masked = false)
         line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
   free(u);
-}
-
-
-///////////////////////////////////////////////////////////////////////////////
-// cheat codes: a text file per game next to the saves, one code per line as typed
-
-static void loadCheatCodes(RomBlob const & rom, std::vector<String> & codes)
-{
-  codes.clear();
-  String path = savePathFor(rom, ".cht");
-  if (!SPIFFS.exists(path))
-    return;
-  File f = SPIFFS.open(path, "r");
-  while (f && f.available() && (int) codes.size() < Nes::MAX_CHEATS) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    Cheat c;
-    if (line.length() && decodeCheat(line.c_str(), &c))
-      codes.push_back(line);
-  }
-}
-
-
-static void storeCheatCodes(RomBlob const & rom, std::vector<String> const & codes)
-{
-  String path = savePathFor(rom, ".cht");
-  if (codes.empty()) {
-    if (SPIFFS.exists(path))
-      SPIFFS.remove(path);
-    return;
-  }
-  s_soundGen->play(false);          // flash writes stop the cache, and the sound interrupt with it
-  File f = SPIFFS.open(path, "w");
-  for (auto const & c : codes)
-    f.print(c + "\n");
-  f.close();
-  s_soundGen->play(true);
-}
-
-
-// The code editor: type a code and Enter to add it, Up/Down to select, Del to remove the
-// selected one, Esc to save and go back. Over serial: characters type, Enter adds, ! removes the
-// selected code, ~ leaves.
-static void editCheats(RomBlob const & rom)
-{
-  std::vector<String> codes, before;
-  loadCheatCodes(rom, codes);
-  before = codes;
-
-  fabgl::Canvas & cv = *s_canvas;
-  auto kb = PS2.keyboard();
-  String input;
-  int selected = 0;
-  char const * message = nullptr;
-  bool redrawList = true;
-
-  cv.setBrushColor(Color::Black);
-  cv.clear();
-  cv.setPenColor(Color::BrightYellow);
-  String title = rom.title;
-  if (title.length() > 24)
-    title = title.substring(0, 24);
-  cv.drawText(0, 4, "CODES");
-  cv.setPenColor(Color::BrightCyan);
-  cv.drawText(56, 4, title.c_str());
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 214, "Game Genie, or Action Replay");
-  cv.drawText(0, 222, "AAAA:VV. Enter:add Del:remove");
-  cv.drawText(0, 231, "Up/Down:select Esc:save+back");
-
-  for (;;) {
-    if (redrawList) {
-      // the codes with what they decode to, each line padded so no clearing is needed
-      for (int i = 0; i < Nes::MAX_CHEATS; ++i) {
-        char line[40] = "";
-        if (i < (int) codes.size()) {
-          Cheat c;
-          decodeCheat(codes[i].c_str(), &c);
-          char what[20];
-          if (c.rom && c.compare >= 0)
-            snprintf(what, sizeof(what), "GG %04X=%02X?%02X", c.addr, c.value, c.compare);
-          else
-            snprintf(what, sizeof(what), "%s %04X=%02X", c.rom ? "GG" : "AR", c.addr, c.value);
-          snprintf(line, sizeof(line), "%-12s %s", codes[i].c_str(), what);
-        }
-        char padded[33];
-        snprintf(padded, sizeof(padded), "%-32s", line);
-        bool sel = i == selected && i < (int) codes.size();
-        cv.setBrushColor(sel ? Color::Blue : Color::Black);
-        cv.setPenColor(sel ? Color::BrightWhite : Color::White);
-        cv.drawText(0, 20 + i * 9, padded);
-      }
-      cv.setBrushColor(Color::Black);
-      redrawList = false;
-    }
-    char line[33];
-    snprintf(line, sizeof(line), "> %-29s", (input + "_").c_str());
-    cv.setPenColor(Color::BrightWhite);
-    cv.drawText(0, 178, line);
-    snprintf(line, sizeof(line), "%-32s", message ? message : "");
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(0, 192, line);
-    cv.waitCompletion();
-
-    // one key, from the keyboard or the serial console
-    int ch = 0;
-    fabgl::VirtualKey vk = fabgl::VK_NONE;
-    while (!ch && vk == fabgl::VK_NONE) {
-      if (Serial.available()) {
-        int c = Serial.read();
-        if (c == '~')
-          vk = fabgl::VK_ESCAPE;
-        else if (c == '!')
-          vk = fabgl::VK_DELETE;
-        else if (c == '\n' || c == '\r')
-          vk = fabgl::VK_RETURN;
-        else if (isprint(c))
-          ch = c;
-        continue;
-      }
-      if (!kb->virtualKeyAvailable()) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        continue;
-      }
-      bool down;
-      auto k = kb->getNextVirtualKey(&down, 0);
-      if (!down)
-        continue;
-      int a = kb->virtualKeyToASCII(k);
-      if (a >= 32 && a < 127 && k != fabgl::VK_DELETE)
-        ch = a;
-      else
-        vk = k;
-    }
-    message = nullptr;
-
-    if (ch) {
-      if ((isalnum(ch) || ch == ':' || ch == '-') && input.length() < 12)
-        input += (char) toupper(ch);
-      continue;
-    }
-    switch (vk) {
-      case fabgl::VK_ESCAPE:
-        if (codes != before)
-          storeCheatCodes(rom, codes);
-        return;
-      case fabgl::VK_BACKSPACE:
-        if (input.length())
-          input.remove(input.length() - 1);
-        break;
-      case fabgl::VK_RETURN: case fabgl::VK_KP_ENTER: {
-        Cheat c;
-        if (!input.length())
-          break;
-        if (!decodeCheat(input.c_str(), &c)) {
-          message = "Not a valid code";
-        } else if ((int) codes.size() >= Nes::MAX_CHEATS) {
-          message = "The list is full";
-        } else {
-          char canon[24];
-          formatCheat(c, input.c_str(), canon, sizeof(canon));
-          codes.push_back(canon);
-          selected = codes.size() - 1;
-          input = "";
-          redrawList = true;
-        }
-        break;
-      }
-      case fabgl::VK_DELETE: case fabgl::VK_KP_DELETE:
-        if (selected < (int) codes.size()) {
-          codes.erase(codes.begin() + selected);
-          selected = std::max(0, std::min(selected, (int) codes.size() - 1));
-          redrawList = true;
-        }
-        break;
-      case fabgl::VK_UP: case fabgl::VK_KP_UP:
-        if (selected > 0) {
-          --selected;
-          redrawList = true;
-        }
-        break;
-      case fabgl::VK_DOWN: case fabgl::VK_KP_DOWN:
-        if (selected + 1 < (int) codes.size()) {
-          ++selected;
-          redrawList = true;
-        }
-        break;
-      default:
-        break;
-    }
-  }
 }
 
 
@@ -1636,12 +1450,12 @@ static int storeSave()
 // the game's codes into the console, all on
 static void applyCheats(RomBlob const & rom)
 {
-  std::vector<String> codes;
-  loadCheatCodes(rom, codes);
+  std::vector<CheatEntry> list;
+  loadCheats(rom, list);
   Cheat cheats[Nes::MAX_CHEATS];
   int cheatCount = 0;
-  for (auto const & c : codes)
-    if (decodeCheat(c.c_str(), &cheats[cheatCount]))
+  for (auto const & e : list)
+    if (e.on && cheatCount < Nes::MAX_CHEATS && decodeCheat(e.code.c_str(), &cheats[cheatCount]))
       ++cheatCount;
   nes.setCheats(cheats, cheatCount);
   nes.enableCheats(cheatCount > 0);
@@ -2519,7 +2333,7 @@ static void runGame()
         return;
       if (c == 'c')
         toggleCheats();
-      if (c == 'Z')
+      if (c == 'Z' || c == 0x1a)
         sendScreenshot();
       if (c == 'P')
         tapePlay();
@@ -2674,7 +2488,7 @@ static int s_paused = -1;
 
 // what a menu reads: the pad's buttons, from the keys mapped to them, real pads or the serial console
 enum MenuKey { MK_NONE, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_A, MK_B, MK_START, MK_SELECT,
-               MK_PAGEUP, MK_PAGEDOWN, MK_ESC, MK_ROM, MK_1, MK_2, MK_3 };
+               MK_PAGEUP, MK_PAGEDOWN, MK_ESC, MK_TAB, MK_DEL, MK_F1, MK_ROM, MK_1, MK_2, MK_3 };
 static int s_serialRom;              // MK_ROM: the game's number sent over serial
 static uint8_t s_menuPads;           // the real pads' buttons as last seen, for new presses
 
@@ -2723,6 +2537,9 @@ static MenuKey menuKey()
         case VK_PAGEDOWN: case VK_KP_PAGEDOWN: return MK_PAGEDOWN;
         case VK_RETURN:   case VK_KP_ENTER:    return MK_A;
         case VK_ESCAPE:   case VK_SYSREQ:      return MK_ESC;
+        case VK_TAB:                           return MK_TAB;
+        case VK_DELETE:   case VK_KP_DELETE:   return MK_DEL;
+        case VK_F1:                            return MK_F1;
         default: break;
       }
       VirtualKey vk = canonKey(positionKey(item));
@@ -2741,8 +2558,10 @@ static MenuKey menuKey()
         return MK_ROM;
       }
       Serial.read();
-      if (c == 'Z')
+      if (c == 'Z' || c == 0x1a)
         sendScreenshot();
+      if (c == '!')
+        return MK_F1;
       static char const keys[] = "abesudlr";
       if (char const * k = strchr(keys, c))
         return buttons[k - keys];
@@ -2794,6 +2613,337 @@ static bool confirm(char const * text)
       case MK_A:                return true;
       case MK_B: case MK_START: case MK_ESC: return false;
       default:                  break;
+    }
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// cheat codes (see MenuMockup.txt): a list per game, each code on or off with a comment, kept in a
+// text file next to the saves, a line per code: "1<tab>8F56 2A 3B<tab>Invincible" (on, code, comment)
+
+static constexpr int CHEAT_ROWS = 24, CODE_LEN = 10, COMMENT_LEN = 16;
+
+static void loadCheats(RomBlob const & rom, std::vector<CheatEntry> & list)
+{
+  list.clear();
+  String path = savePathFor(rom, ".cht");
+  if (!SPIFFS.exists(path))
+    return;
+  File f = SPIFFS.open(path, "r");
+  while (f && f.available() && (int) list.size() < Nes::MAX_CHEATS) {
+    String line = f.readStringUntil('\n');
+    int tab1 = line.indexOf('\t'), tab2 = tab1 < 0 ? -1 : line.indexOf('\t', tab1 + 1);
+    if (tab2 < 0)
+      continue;                   // not a line of this format
+    CheatEntry e { line[0] == '1', line.substring(tab1 + 1, tab2), line.substring(tab2 + 1) };
+    e.comment.trim();
+    Cheat c;
+    if (decodeCheat(e.code.c_str(), &c))
+      list.push_back(e);
+  }
+}
+
+
+static void storeCheats(RomBlob const & rom, std::vector<CheatEntry> const & list)
+{
+  String path = savePathFor(rom, ".cht");
+  s_soundGen->play(false);          // flash writes stop the cache, and the sound interrupt with it
+  if (list.empty()) {
+    if (SPIFFS.exists(path))
+      SPIFFS.remove(path);
+  } else {
+    File f = SPIFFS.open(path, "w");
+    for (auto const & e : list)
+      f.print(String(e.on ? "1\t" : "0\t") + e.code + "\t" + e.comment + "\n");
+    f.close();
+  }
+  s_soundGen->play(true);
+}
+
+
+// whether a pad button is held now (a key mapped to it, or a real pad), for B+Right
+static bool buttonHeld(int bit)
+{
+  auto kb = PS2.keyboard();
+  int b = __builtin_ctz(bit);
+  return (s_menuPads & bit) || kb->isVKDown(s_padKeys[0][b]) || kb->isVKDown(s_padKeys[1][b]);
+}
+
+
+// The cheat entry box over the list: a code and a comment, typed on the keyboard or picked from
+// the drawn one with the pad (F1 switches, remembered until the next power on). Returns false when
+// aborted; else *e has the code in its canonical form.
+static bool cheatEntry(CheatEntry * e)
+{
+  using namespace ui;
+  static int keyboardMode = -1;       // -1: by whether a keyboard is there
+  if (keyboardMode < 0)
+    keyboardMode = PS2.keyboard()->isKeyboardAvailable();
+  // the drawn keyboard: per row the first column and the keys; '\x01' is space, '\x02' abort,
+  // '\x03' OK
+  struct Key { int col; char ch; };
+  static const struct { int col; char const * keys; } layout[6] = {
+    { 5, "1234567890" }, { 5, "QWERTYUIOP" }, { 7, "ASDFGHJKL" }, { 9, "ZXCVBNM\x01" },
+    { 4, "!\"$%&+-*/=<>" }, { 4, "()[]_.,:;\x02\x03" },
+  };
+  auto keyCol = [&](int r, int i) {
+    int col = layout[r].col + 2 * i;
+    if (r == 5 && i >= 9)              // [X] [/] after a gap
+      col = i == 9 ? 23 : 27;
+    if (r == 3 && i == 7)              // [Spc]
+      col = 23;
+    return col;
+  };
+  auto keyCount = [&](int r) { return (int) strlen(layout[r].keys); };
+  String fields[2] = { e->code, e->comment };
+  int lens[2] = { CODE_LEN, COMMENT_LEN };
+  int field = 0, kr = 0, ki = 0;
+  static constexpr int ROW = 7, H = 16;
+  auto kb = PS2.keyboard();
+  kb->emptyVirtualKeyQueue();
+
+  auto type = [&](char ch) {
+    if ((int) fields[field].length() >= lens[field])
+      return;
+    if (field == 0 && !isalnum((unsigned char) ch) && ch != ' ')
+      return;                          // codes: hex digits and Game Genie letters
+    fields[field] += field == 0 ? (char) toupper(ch) : ch;
+  };
+  auto backspace = [&]() {
+    if (fields[field].length())
+      fields[field].remove(fields[field].length() - 1);
+  };
+  // OK: true when the code is valid (then it is in *e)
+  auto accept = [&]() {
+    Cheat c;
+    if (!decodeCheat(fields[0].c_str(), &c)) {
+      message(BAD, "Not a valid code");
+      return false;
+    }
+    char canon[16];
+    formatCheat(c, canon, sizeof(canon));
+    e->code = canon;
+    e->comment = fields[1];
+    e->comment.trim();
+    return true;
+  };
+
+  for (;;) {
+    box(0, ROW, COLS, H);
+    for (int f = 0; f < 2; ++f) {
+      int r = ROW + 1 + f;
+      put(1, r, f ? "Comment:" : "Code:");
+      bool on = f == field;
+      putc(10, r, '[', on ? YELLOW : GREY);
+      for (int i = 0; i < lens[f]; ++i) {
+        bool filled = i < fields[f].length();
+        putc(11 + i, r, filled ? fields[f][i] : on && i == fields[f].length() ? '_' : '.', filled ? TEXT : on && i == fields[f].length() ? YELLOW : GREY);
+      }
+      putc(11 + lens[f], r, ']', on ? YELLOW : GREY);
+    }
+    divider(0, ROW + 3, COLS);
+    for (int r = 0; r < 6; ++r)
+      for (int i = 0; i < keyCount(r); ++i) {
+        char ch = layout[r].keys[i];
+        bool sel = !keyboardMode && r == kr && i == ki;
+        uint8_t bg = sel ? SEL_BG : BLACK, fg = sel ? SEL_TEXT : TEXT;
+        int col = keyCol(r, i);
+        if (ch == '\x01')
+          put(col, ROW + 4 + r, "[Spc]", fg, bg);
+        else if (ch == '\x02' || ch == '\x03') {
+          put(col, ROW + 4 + r, "[ ]", fg, bg);
+          putc(col + 1, ROW + 4 + r, ch == '\x02' ? G_CROSS : G_CHECK, sel ? SEL_TEXT : ch == '\x02' ? RED : GREEN, bg);
+        } else
+          putc(col, ROW + 4 + r, ch, fg, bg);
+      }
+    divider(0, ROW + 10, COLS);
+    hint(1, ROW + 11, "+: Move Crsr    A: Key    B: <");
+    hint(4, ROW + 12, "Select|Tab: Change Field");
+    hint(3, ROW + 13, "F1: Toggle Keyboard Joypad");
+    put(14, ROW + 13, "Keyboard", keyboardMode ? GREEN : GREY);
+    put(23, ROW + 13, "Joypad", keyboardMode ? GREY : GREEN);
+    hint(1, ROW + 14, "[X]|ESC: Abort   [V]|Enter: OK");
+    putc(2, ROW + 14, G_CROSS, RED);
+    putc(19, ROW + 14, G_CHECK, GREEN);
+    flush();
+
+    if (keyboardMode) {
+      // typing: the layout's characters; Enter, Esc, Tab, Backspace, F1. Over serial: characters
+      // type, Enter is OK, ~ aborts, | changes the field, ^ deletes, ! switches to the pad
+      int ch = 0;
+      fabgl::VirtualKey vk = fabgl::VK_NONE;
+      if (Serial.available()) {
+        int c = Serial.read();
+        if (c == 0x1a)              sendScreenshot();     // Ctrl+Z: Z is a letter to type here
+        else if (c == '\r' || c == '\n') vk = fabgl::VK_RETURN;
+        else if (c == '~')          vk = fabgl::VK_ESCAPE;
+        else if (c == '|')          vk = fabgl::VK_TAB;
+        else if (c == '^')          vk = fabgl::VK_BACKSPACE;
+        else if (c == '!')          vk = fabgl::VK_F1;
+        else if (c >= 32 && c < 127) ch = c;
+      } else if (kb->virtualKeyAvailable()) {
+        fabgl::VirtualKeyItem item;
+        if (kb->getNextVirtualKey(&item, 0) && item.down) {
+          vk = item.vk;
+          if (item.ASCII >= 32 && item.ASCII < 127)
+            ch = item.ASCII;
+        }
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+      if (ch) {
+        type(ch);
+        continue;
+      }
+      switch (vk) {
+        case fabgl::VK_RETURN: case fabgl::VK_KP_ENTER:
+          if (accept())
+            return true;
+          break;
+        case fabgl::VK_ESCAPE:    return false;
+        case fabgl::VK_TAB:       field ^= 1; break;
+        case fabgl::VK_BACKSPACE: backspace(); break;
+        case fabgl::VK_F1:        keyboardMode = 0; menuKeyStart(); break;
+        default: break;
+      }
+      continue;
+    }
+
+    // the pad on the drawn keyboard
+    auto nearest = [&](int r) {
+      int col = keyCol(kr, ki), best = 0;
+      for (int i = 1; i < keyCount(r); ++i)
+        if (abs(keyCol(r, i) - col) < abs(keyCol(r, best) - col))
+          best = i;
+      return best;
+    };
+    switch (menuKey()) {
+      case MK_LEFT:  ki = (ki + keyCount(kr) - 1) % keyCount(kr); break;
+      case MK_RIGHT: ki = (ki + 1) % keyCount(kr); break;
+      case MK_UP:    { int r = (kr + 5) % 6; ki = nearest(r); kr = r; break; }
+      case MK_DOWN:  { int r = (kr + 1) % 6; ki = nearest(r); kr = r; break; }
+      case MK_B:     backspace(); break;
+      case MK_SELECT: case MK_TAB: field ^= 1; break;
+      case MK_ESC:   return false;
+      case MK_F1:    keyboardMode = 1; kb->emptyVirtualKeyQueue(); break;
+      case MK_A: {
+        char ch = layout[kr].keys[ki];
+        if (ch == '\x02')
+          return false;
+        if (ch == '\x03') {
+          if (accept())
+            return true;
+        } else
+          type(ch == '\x01' ? ' ' : ch);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+
+// The cheat list: Up/Down select, A edits (on NEW: a new code), B switches one on and off, B+Right
+// (or Delete) deletes it, Start (Esc) goes back. Changes are written when leaving.
+static void editCheats(RomBlob const & rom)
+{
+  using namespace ui;
+  std::vector<CheatEntry> list, before;
+  loadCheats(rom, list);
+  before = list;
+  int sel = 0, toggled = -1;          // toggled: the row B just switched (B+Right takes that back)
+  invalidate();
+  menuKeyStart();
+  messageArea(0, COLS);
+
+  auto changed = [&]() {
+    if (list.size() != before.size())
+      return true;
+    for (size_t i = 0; i < list.size(); ++i)
+      if (list[i].on != before[i].on || list[i].code != before[i].code || list[i].comment != before[i].comment)
+        return true;
+    return false;
+  };
+
+  for (;;) {
+    int rows = std::min((int) list.size() + 1, CHEAT_ROWS);      // with NEW while there is room
+    sel = std::max(0, std::min(sel, rows - 1));
+    clear();
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    char text[33];
+    snprintf(text, COLS - 1, "%s", rom.title);
+    put(1, 0, text, GREEN);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+    for (int i = 0; i < rows; ++i) {
+      bool on = i == sel;
+      uint8_t bg = on ? SEL_BG : BLACK, fg = on ? SEL_TEXT : TEXT;
+      fill(0, 2 + i, COLS, 1, ' ', fg, bg);
+      if (i == (int) list.size()) {
+        put(1, 2 + i, "NEW", on ? SEL_TEXT : GREY, bg);
+        continue;
+      }
+      CheatEntry const & e = list[i];
+      putc(0, 2 + i, e.on ? G_CHECK : G_CROSS, e.on ? GREEN : GREY, bg);
+      put(1, 2 + i, e.code.c_str(), fg, bg);
+      put(12, 2 + i, e.comment.c_str(), fg, bg);
+    }
+    box(0, ROWS - 4, COLS, 5);        // its bottom line is off the screen
+    hint(1, ROWS - 3, "^v: Move Crsr          A: Edit");
+    hint(1, ROWS - 2, "B: Toggle          B+>: Delete");
+    hint(1, ROWS - 1, "Select: Search     Start: Back");
+    flush();
+
+    MenuKey key = menuKey();
+    bool onCode = sel < (int) list.size();
+    if (key != MK_NONE && key != MK_B && key != MK_RIGHT)
+      toggled = -1;
+    switch (key) {
+      case MK_UP:   sel = (sel + rows - 1) % rows; break;
+      case MK_DOWN: sel = (sel + 1) % rows; break;
+      case MK_B:
+        if (onCode) {
+          list[sel].on = !list[sel].on;
+          toggled = sel;
+        }
+        break;
+      case MK_RIGHT: case MK_DEL:
+        if (!onCode || (key == MK_RIGHT && !buttonHeld(BTN_B)))
+          break;
+        if (toggled == sel)           // the B of B+Right switched it: back as it was
+          list[sel].on = !list[sel].on;
+        toggled = -1;
+        if (confirm("Delete this code?")) {
+          list.erase(list.begin() + sel);
+          message(NEUTRAL, "Code deleted");
+        }
+        break;
+      case MK_A: {
+        CheatEntry e = onCode ? list[sel] : CheatEntry { true, "", "" };
+        if (cheatEntry(&e)) {
+          if (onCode)
+            list[sel] = e;
+          else
+            list.push_back(e);
+        }
+        break;
+      }
+      case MK_SELECT:
+        message(NEUTRAL, "The search comes next");
+        break;
+      case MK_START: case MK_ESC:
+        if (changed()) {
+          storeCheats(rom, list);
+          message(GOOD, "Cheats saved");
+        }
+        return;
+      default:
+        break;
     }
   }
 }
@@ -2879,9 +3029,9 @@ static void gatherFacts(int idx, GameFacts & f)
   if (wantsKeyboard(rom, cfg))
     f.features[f.featureCount++] = "Keyboard";
 
-  std::vector<String> codes;
-  loadCheatCodes(rom, codes);
-  f.cheats = codes.size();
+  std::vector<CheatEntry> list;
+  loadCheats(rom, list);
+  f.cheats = std::count_if(list.begin(), list.end(), [](CheatEntry const & e) { return e.on; });
   f.slots[0] = slotUsed(rom, 1);
   f.slots[1] = slotUsed(rom, 2);
 }
@@ -2905,6 +3055,7 @@ static void drawMainMenu(int selected, int top, GameFacts const & f)
 {
   using namespace ui;
   clear();
+  messageArea(6, COLS - 6);           // next to the logo
   drawLogo(1, 0);
   char text[33];
   snprintf(text, sizeof(text), "TV:%s", regionChoiceName());
@@ -3265,7 +3416,6 @@ static int chooseRom(int * slot)
   int shownPicture = -1;
   listRoms();
   ui::invalidate();                   // a game or something else was on the screen
-  ui::messageArea(6, ui::COLS - 6);
   if (selected >= g_romCount)
     selected = 0;
   if (s_paused >= 0)

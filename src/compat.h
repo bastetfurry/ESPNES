@@ -50,6 +50,7 @@ public:
     return from >= length() ? String() : String(substr(from, to - from));
   }
   int    indexOf(char c) const                  { size_t p = find(c); return p == npos ? -1 : (int) p; }
+  int    indexOf(char c, int from) const        { size_t p = find(c, from); return p == npos ? -1 : (int) p; }
   int    indexOf(char const * s) const          { size_t p = find(s); return p == npos ? -1 : (int) p; }
   int    lastIndexOf(char c) const              { size_t p = rfind(c); return p == npos ? -1 : (int) p; }
   bool   startsWith(String const & s) const     { return compare(0, s.size(), s) == 0; }

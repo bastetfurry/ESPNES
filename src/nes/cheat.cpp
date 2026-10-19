@@ -24,19 +24,56 @@ static int hexDigit(char c)
 }
 
 
+// hex: AAAAVV, AAAAVVCC from $8000, or Action Replay's 00AAAAVV (and short forms like AVV)
+static bool decodeHex(char const * s, int len, Cheat * out)
+{
+  char buf[16];
+  memcpy(buf, s, len + 1);
+  if (len == 8 && buf[0] == '0' && buf[1] == '0')
+    memmove(buf, buf + 2, (len -= 2) + 1);
+  if (len < 3 || len > 8 || len == 7)
+    return false;
+  uint32_t v = 0;
+  for (int i = 0; i < len; ++i) {
+    int d = hexDigit(buf[i]);
+    if (d < 0)
+      return false;
+    v = (v << 4) | d;
+  }
+  int compare = -1;
+  if (len == 8) {
+    compare = v & 0xff;
+    v >>= 8;
+  }
+  uint16_t addr = v >> 8;
+  if (compare >= 0 && addr < 0x8000)
+    return false;               // a compare value only for ROM
+  out->rom = addr >= 0x8000;
+  out->addr = addr;
+  out->value = v & 0xff;
+  out->compare = compare;
+  return true;
+}
+
+
 bool decodeCheat(char const * text, Cheat * out)
 {
   // the code without separators
   char s[16];
   int len = 0;
+  bool separated = false;
   for (; *text; ++text) {
-    if (*text == ' ' || *text == '-' || *text == ':')
+    if (*text == ' ' || *text == '-' || *text == ':') {
+      separated |= *text != '-';
       continue;
+    }
     if (len == (int) sizeof(s) - 1)
       return false;
     s[len++] = *text;
   }
   s[len] = 0;
+  if (separated && decodeHex(s, len, out))
+    return true;
 
   // Game Genie: the letters are 4 bit values, scrambled into address, value and compare
   if (len == 6 || len == 8) {
@@ -58,40 +95,14 @@ bool decodeCheat(char const * text, Cheat * out)
       return true;
     }
   }
-
-  // Action Replay: hex address and value, the 8 digit form with a leading 00
-  if (len == 8 && s[0] == '0' && s[1] == '0')
-    memmove(s, s + 2, (len -= 2) + 1);
-  if (len >= 3 && len <= 6) {
-    int v = 0;
-    for (int i = 0; i < len; ++i) {
-      int d = hexDigit(s[i]);
-      if (d < 0)
-        return false;
-      v = (v << 4) | d;
-    }
-    uint16_t addr = v >> 8;
-    if (addr >= 0x8000)
-      return false;
-    out->rom = false;
-    out->addr = addr;
-    out->value = v & 0xff;
-    out->compare = -1;
-    return true;
-  }
-  return false;
+  return decodeHex(s, len, out);
 }
 
 
-void formatCheat(Cheat const & c, char const * typed, char * out, int outSize)
+void formatCheat(Cheat const & c, char * out, int outSize)
 {
-  if (c.rom) {
-    int n = 0;
-    for (; *typed && n < outSize - 1; ++typed)
-      if (*typed != ' ' && *typed != '-')
-        out[n++] = toupper((unsigned char) *typed);
-    out[n] = 0;
-  } else {
-    snprintf(out, outSize, "%04X:%02X", c.addr, c.value);
-  }
+  if (c.compare >= 0)
+    snprintf(out, outSize, "%04X %02X %02X", c.addr, c.value, c.compare);
+  else
+    snprintf(out, outSize, "%04X %02X", c.addr, c.value);
 }

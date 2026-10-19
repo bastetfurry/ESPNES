@@ -4,7 +4,7 @@
     tools/screenshot.py [out.png] [--port /dev/ttyUSB0] [--keys "ddds"]
 
 Sends the keys first (the serial console's letters, e.g. d = Down, s = Start), each 0.3 s apart,
-then 'Z'; the board answers with 240 lines "Screen: " + 256 characters, '0' + the raw pixel's
+then Ctrl+Z; the board answers with 240 lines "Screen: " + 256 characters, '0' + the raw pixel's
 colour bits (RGB222: red in bits 0-1, green 2-3, blue 4-5). Works in the menus and in games.
 """
 
@@ -47,7 +47,7 @@ def main():
         s.write(k.encode())
         time.sleep(0.3)
     s.reset_input_buffer()
-    s.write(b"Z")
+    s.write(b"\x1a")          # Ctrl+Z: works where Z is typed as a letter too
 
     rows = []
     deadline = time.time() + 20

@@ -609,7 +609,6 @@ its golden log). `host/nestool run ROM FRAMES out.ppm` runs a game and dumps fra
 - `roms/` built into the firmware by `tools/embed_roms.py`
 - `testroms/` test ROMs for the host harness (nestest, AccuracyCoin)
 - `roms-test/` local ROMs for testing with the host harness, not built in and not in git
-- `MenuMockup.txt` the menus as designed, 32 x 30 characters each
 
 ## Licence and credits
 

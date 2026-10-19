@@ -2329,7 +2329,7 @@ static void runGame()
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// the main menu (see MenuMockup.txt): the games with the selected one's picture and facts, Start
+// the main menu: the games with the selected one's picture and facts, Start
 // opens the options over it. Drawn through the text grid (ui.h), which redraws only what changed.
 
 // The game in the console while the menu shows: leaving it through the system menu pauses it
@@ -2491,7 +2491,7 @@ static bool confirm(char const * text)
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// cheat codes (see MenuMockup.txt): a list per game, each code on or off with a comment, kept in a
+// cheat codes: a list per game, each code on or off with a comment, kept in a
 // text file next to the saves, a line per code: "1<tab>8F56 2A 3B<tab>Invincible" (on, code, comment)
 
 static constexpr int CHEAT_ROWS = 24, CODE_LEN = 10, COMMENT_LEN = 16;
@@ -3039,7 +3039,7 @@ static void editCheats(RomBlob const & rom, bool running)
 }
 
 
-// The memory editor and the file viewer (see MenuMockup.txt): 8 bytes a line, 25 lines. Left/
+// The memory editor and the file viewer: 8 bytes a line, 25 lines. Left/
 // Right move a byte, Up/Down a line, B+Up/Down (or Page Up/Down) a page. In the editor A edits
 // the selected byte (Left/Right -/+ $01, Up/Down -/+ $10, A writes it, B leaves it as it was) and
 // Select picks the region; the game waits meanwhile and goes on with what was written.
@@ -3200,7 +3200,7 @@ static char const * fileTag(String const & path)
 }
 
 
-// The file manager (see MenuMockup.txt): what is in SPIFFS, by game. Up/Down (Left/Right a page)
+// The file manager: what is in SPIFFS, by game. Up/Down (Left/Right a page)
 // select, A views the file, Select+A (or Delete) deletes it, Select+B deletes all files of games
 // that are no longer built in (red; their names carry a CRC no game has), both after asking.
 // Start or Esc goes back. Select counts as held for a second after it was pressed, so the pair
@@ -3860,7 +3860,7 @@ static int chooseRom(int * slot)
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// System menu (see MenuMockup.txt): SysRq (Alt+PrintScreen) in every game, as in ESPPC, or A+B+
+// System menu: SysRq (Alt+PrintScreen) in every game, as in ESPPC, or A+B+
 // Start+Select on pad 1. The game stands still while it is open; the box is drawn over its
 // picture, the rest of the grid is left alone (ui::picture), and the next frame paints it all again.
 

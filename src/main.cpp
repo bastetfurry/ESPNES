@@ -13,16 +13,16 @@
 // buffer's fill level to keep it from running dry or overflowing.
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start; player 2 and the Famicom
-//       mic on the numpad (all changed with K in the ROM list); real NES pads on GPIOs (see
+//       mic on the numpad (all changed in the main menu's options); real NES pads on GPIOs (see
 //       PAD_LATCH_GPIO). SysRq (Alt+PrintScreen) = the system menu (tape, cheats, volume, reset,
 //       back to the ROM list) in every game; F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
 //       F5/F6/F7 = the Data Recorder's play/record/stop (see "Data Recorder"). Esc is the game's.
 //       Family BASIC: the keyboard is the Famicom's, Scroll Lock switches it to the pads and back.
-// In the ROM list, G edits the selected game's Game Genie / Action Replay codes.
-// "Back to the ROM list" pauses the game; Enter on the paused game carries on, S saves its
-// state in one of two slots per game, L loads one (see "savestates").
-// Serial console: a number starts that ROM from the list, 'k' sets the keys, 'q' leaves the game, and
-// a b e s u d l r tap A, B, sElect, Start and the directions; P R X play, record and stop the tape,
+// The main menu (see "the main menu") works with the pad's buttons; Start opens its options
+// (manual, savestates, cheat codes, TV system, keys, files, about). "Back to the ROM list" pauses
+// the game; A on the paused game carries on.
+// Serial console: a number starts that ROM from the list, 'q' leaves the game, Z sends a screenshot,
+// and a b e s u d l r tap A, B, sElect, Start and the directions (in the menus too); P R X play, record and stop the tape,
 // U loads one (tools/tape.py), y opens the system menu, T and a line types it on the Famicom keyboard.
 
 #include "compat.h"
@@ -36,8 +36,16 @@
 
 #include "nes/nes.h"
 #include "nes/palette.h"
+#include "nes/nsf.h"
 #include "romindex.h"
 #include "fonts.h"
+#include "ui.h"
+
+#include "esp_chip_info.h"
+#include "esp_flash.h"
+#include "esp_partition.h"
+#include "esp_ota_ops.h"
+#include "esp_image_format.h"
 
 
 static fabgl::VGAController   VGA;
@@ -81,6 +89,15 @@ static void initVideo()
   }
   for (int y = 0; y < 240; ++y)
     s_lines[y] = VGA.getScanline(y);
+  // the menus' colours (ui::Colour)
+  static const RGB222 uiColours[ui::COLOURS] = {
+    { 0, 0, 0 }, { 0, 0, 3 }, { 3, 3, 3 }, { 1, 1, 1 }, { 0, 0, 2 }, { 3, 3, 0 },
+    { 3, 0, 0 }, { 0, 3, 0 }, { 3, 3, 0 }, { 3, 3, 3 }, { 0, 3, 3 },
+  };
+  uint8_t uiRaw[ui::COLOURS];
+  for (int i = 0; i < ui::COLOURS; ++i)
+    uiRaw[i] = VGA.createRawPixel(uiColours[i]);
+  ui::init(s_lines, uiRaw);
   // the PPU draws raw pixels straight into the frame buffer, in the DMA's byte order
   nes.setVideoOutput(s_lines, s_raw, true);
 
@@ -117,8 +134,10 @@ int IRAM_ATTR ApuStream::getSample()
     s_lastSample = s_ring[tail & (RING_SIZE - 1)];
     s_ringTail.store(tail + 1, std::memory_order_release);
   }
-  // when the buffer runs dry, hold the last level: that is silent, a jump to 0 would click
-  return s_lastSample;
+  // when the buffer runs dry, hold the last level: that is silent, a jump to 0 would click;
+  // the menus' sounds on top
+  int v = s_lastSample + (ui::soundSample() * s_volume >> 2);
+  return v > 127 ? 127 : v < -127 ? -127 : v;
 }
 
 static fabgl::SoundGenerator * s_soundGen;
@@ -132,6 +151,7 @@ static void initSound()
   s_apuStream.setVolume(127);
   s_apuStream.enable(true);
   s_soundGen->play(true);
+  ui::soundRate(s_apuStream.sampleRate() ? s_apuStream.sampleRate() : AUDIO_RATE);
 }
 
 static uint32_t ringFill()
@@ -184,81 +204,7 @@ static bool   slotUsed(RomBlob const & rom, int slot);
 static char const * saveSlot(int idx, int slot);
 static void   applyCheats(RomBlob const & rom);
 static void   showOverlay(char const * text);
-
-// The game in the console while the menu shows: Esc pauses it (nothing is copied, the console just
-// waits), Enter on it carries on. Starting or loading another game ends it. -1: none.
-static int s_paused = -1;
-
-// menu layout: the list on the left, a PICTURE_SIZE square picture on the right
-static constexpr int LIST_Y = 20;
-static constexpr int PIC_X  = 256 - 4 - PICTURE_SIZE;
-static constexpr int PIC_Y  = LIST_Y;
-
-// What the menu shows right now, so a key press redraws only what changed instead of the whole
-// screen (which flickers). Any other screen (a game, a manual) invalidates it.
-static struct {
-  bool         valid = false;
-  int          selected, top;
-  RegionChoice region;
-  char const * message;
-} s_shown;
-
-
-static void drawRow(int idx, int top, bool highlighted)
-{
-  fabgl::Canvas & cv = *s_canvas;
-  int y = LIST_Y + (idx - top) * 9;
-  cv.setBrushColor(highlighted ? Color::Blue : Color::Black);
-  cv.fillRectangle(0, y - 1, PIC_X - 6, y + 7);
-  String n = g_roms[idx].title;
-  if (n.length() > 21)
-    n = n.substring(0, 21);
-  if (idx == s_paused) {
-    cv.setPenColor(Color::BrightGreen);
-    cv.drawText(2, y, "\x10");         // the paused game: a play arrow
-  }
-  cv.setPenColor(highlighted ? Color::BrightWhite : Color::White);
-  cv.drawText(12, y, n.c_str());       // glyphs fill their background with the brush colour
-  cv.setBrushColor(Color::Black);
-}
-
-
-static void drawRegion()
-{
-  static char const * regionNames[] = { "Auto", "NTSC", "PAL " };
-  char buf[16];
-  snprintf(buf, sizeof(buf), "TV: %s", regionNames[(int)s_regionChoice]);   // fixed width
-  s_canvas->setPenColor(Color::White);
-  s_canvas->drawText(256 - 8 - 8 * 8, 4, buf);
-}
-
-
-static void drawMessage(char const * message)
-{
-  fabgl::Canvas & cv = *s_canvas;
-  cv.setBrushColor(Color::Black);
-  cv.fillRectangle(0, 200, 255, 209);
-  if (message) {
-    Serial.printf("Menu: %s\n", message);
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(8, 201, message);
-  }
-}
-
-
-// under the picture: which of the game's savestate slots hold a state
-static void drawSlots(int idx)
-{
-  fabgl::Canvas & cv = *s_canvas;
-  for (int slot = 1; slot <= 2; ++slot) {
-    bool used = slotUsed(g_roms[idx], slot);
-    char text[12];
-    snprintf(text, sizeof(text), "Slot %d %c", slot, used ? 0xfb : '-');    // a check mark
-    cv.setPenColor(used ? Color::BrightGreen : Color::BrightBlack);
-    cv.drawText(PIC_X, PIC_Y + PICTURE_SIZE + 6 + (slot - 1) * 10, text);
-  }
-}
-
+static void   sendScreenshot();
 
 // Unpacks a picture with the inflate in the ESP32's ROM (no code of ours in flash). Its decoder
 // state is about 11 KB, too much for the stack: it and the picture are on the heap only while
@@ -281,7 +227,7 @@ static bool unpackPicture(RomBlob const & rom, PictureUnpack * u)
 
 
 // straight into the frame buffer; call once the canvas has finished drawing
-static void drawPicture(int idx, int left = PIC_X, int top = PIC_Y)
+static void drawPicture(int idx, int left, int top)
 {
   auto * u = (PictureUnpack *) malloc(sizeof(PictureUnpack));
   uint8_t const * pic = u && unpackPicture(g_roms[idx], u) ? u->pixels : nullptr;
@@ -291,68 +237,6 @@ static void drawPicture(int idx, int left = PIC_X, int top = PIC_Y)
       line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
   free(u);
-}
-
-
-static void drawMenu(int selected, int top, int visible, char const * message)
-{
-  fabgl::Canvas & cv = *s_canvas;
-  bool full = !s_shown.valid || top != s_shown.top;
-  bool moved = full || selected != s_shown.selected;
-
-  if (full) {
-    cv.setBrushColor(Color::Black);
-    cv.clear();
-    // the logo: 4 x 2 glyphs of the font (fonts/font8x8.png, 0xEC-0xEF over 0xFC-0xFF), a
-    // cartridge in light grey, then the name in red
-    cv.setPenColor(Color::White);
-    cv.drawText(4, 2, "\xec\xed");
-    cv.drawText(4, 10, "\xfc\xfd");
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(20, 2, "\xee\xef");
-    cv.drawText(20, 10, "\xfe\xff");
-    drawRegion();
-    if (!g_romCount) {
-      cv.setPenColor(Color::BrightRed);
-      cv.drawText(8, 40, "No ROMs built in.");
-      cv.setPenColor(Color::White);
-      cv.drawText(8, 56, "Put .nes files in roms/ and");
-      cv.drawText(8, 68, "run pio run -t upload");
-    } else {
-      for (int i = 0; i < visible && top + i < g_romCount; ++i)
-        drawRow(top + i, top, top + i == selected);
-      // the picture box, empty when the game has no picture
-      cv.setPenColor(Color::BrightBlack);
-      cv.drawRectangle(PIC_X - 1, PIC_Y - 1, PIC_X + PICTURE_SIZE, PIC_Y + PICTURE_SIZE);
-    }
-    drawMessage(message);
-    cv.setPenColor(Color::BrightBlack);
-    cv.drawText(4, 213, "Enter:play \x1b\x1a:TV M:man G:codes");
-    cv.drawText(4, 222, "S/L:save/load K:keys F:files");
-    cv.drawText(4, 231, "F1:rst F2/3:vol F10:cheat");
-  } else {
-    if (moved) {
-      drawRow(s_shown.selected, top, false);
-      drawRow(selected, top, true);
-    }
-    if (s_regionChoice != s_shown.region)
-      drawRegion();
-    if (message != s_shown.message)
-      drawMessage(message);
-  }
-  cv.waitCompletion();
-
-  if (g_romCount && moved) {
-    drawSlots(selected);
-    cv.waitCompletion();
-    drawPicture(selected);
-  }
-
-  s_shown.valid    = true;
-  s_shown.selected = selected;
-  s_shown.top      = top;
-  s_shown.region   = s_regionChoice;
-  s_shown.message  = message;
 }
 
 
@@ -471,189 +355,6 @@ static void showManual(RomBlob const & rom)
       }
     }
     page = std::max(0, std::min((int) pages.size() - 1, page + step));
-  }
-}
-
-
-// Asks for a savestate slot in the message line: 1 or 2, 0 for Esc. Over serial: 1, 2 or ~.
-static int askSlot(char const * question)
-{
-  drawMessage(question);
-  s_shown.message = question;         // so the menu redraws its message line afterwards
-  s_canvas->waitCompletion();
-  auto kb = PS2.keyboard();
-  for (;;) {
-    if (Serial.available()) {
-      int c = Serial.read();
-      if (c == '1' || c == '2')
-        return c - '0';
-      if (c == '~')
-        return 0;
-      continue;
-    }
-    if (!kb->virtualKeyAvailable()) {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
-    bool down;
-    auto vk = kb->getNextVirtualKey(&down, 0);
-    if (!down)
-      continue;
-    if (vk == fabgl::VK_1 || vk == fabgl::VK_KP_1 || vk == fabgl::VK_KP_END)
-      return 1;
-    if (vk == fabgl::VK_2 || vk == fabgl::VK_KP_2 || vk == fabgl::VK_KP_DOWN)
-      return 2;
-    if (vk == fabgl::VK_ESCAPE)
-      return 0;
-  }
-}
-
-
-// Shows the list until a ROM is picked. Returns its index, and in *slot the savestate slot to
-// start it from (0: none; for the paused game that means carrying on).
-static int chooseRom(char const * message, int * slot)
-{
-  *slot = 0;
-  static int selected = 0;
-  const int visible = 20;
-  auto kb = PS2.keyboard();
-  listRoms();
-  s_shown.valid = false;              // a game or something else was on the screen
-  if (selected >= g_romCount)
-    selected = 0;
-  for (;;) {
-    int top = std::max(0, std::min(selected - visible / 2, g_romCount - visible));
-    drawMenu(selected, top, visible, message);
-    // a number on the serial console starts that ROM, for testing without a keyboard
-    int n = g_romCount;
-    bool down = false;
-    fabgl::VirtualKey vk = fabgl::VK_NONE;
-    while (vk == fabgl::VK_NONE) {
-      // over serial: a number starts that game, m and a number shows its manual
-      if (Serial.available()) {
-        int c = Serial.peek();
-        if (c == 'k' || c == 'f') {
-          Serial.read();
-          message = c == 'k' ? editPadKeys() : fileManager();
-          s_shown.valid = false;
-          break;
-        }
-        if (c == 's' || c == 'l') {
-          Serial.read();
-          vk = c == 's' ? fabgl::VK_s : fabgl::VK_l;      // as the keys; 'l' takes a game number after the slot
-          down = true;
-          break;
-        }
-        if (c != 'm' && c != 'g' && !isdigit(c)) {
-          Serial.read();          // stray characters (line ends) would read as game 0
-          continue;
-        }
-        bool manual = c == 'm', codes = c == 'g';
-        if (manual || codes)
-          Serial.read();
-        int idx = Serial.parseInt();
-        if (idx >= 0 && idx < n) {
-          selected = idx;
-          if (codes) {
-            editCheats(g_roms[idx]);
-            s_shown.valid = false;
-            vk = fabgl::VK_NONE;
-            break;
-          }
-          if (!manual)
-            return idx;
-          if (g_roms[idx].manual) {
-            showManual(g_roms[idx]);
-            s_shown.valid = false;
-          }
-          vk = fabgl::VK_NONE;
-          break;
-        }
-      }
-      if (kb->virtualKeyAvailable())
-        vk = kb->getNextVirtualKey(&down, 0);
-      else
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    if (!down)
-      continue;
-    message = nullptr;
-    switch (vk) {
-      case fabgl::VK_k: case fabgl::VK_K:
-        message = editPadKeys();
-        s_shown.valid = false;
-        break;
-      case fabgl::VK_f: case fabgl::VK_F:
-        message = fileManager();
-        s_shown.valid = false;
-        break;
-      case fabgl::VK_g: case fabgl::VK_G:
-        if (n) {
-          editCheats(g_roms[selected]);
-          if (selected == s_paused)
-            applyCheats(g_roms[selected]);
-          s_shown.valid = false;
-        }
-        break;
-      case fabgl::VK_s: case fabgl::VK_S: {
-        if (s_paused < 0) {
-          message = "No game paused to save";
-          break;
-        }
-        // the paused game, whatever is selected
-        if (selected != s_paused) {
-          selected = s_paused;
-          top = std::max(0, std::min(selected - visible / 2, g_romCount - visible));
-          drawMenu(selected, top, visible, nullptr);
-        }
-        int slot = askSlot("Save to slot 1 or 2? (Esc)");
-        message = slot ? saveSlot(s_paused, slot) : nullptr;
-        if (slot)
-          drawSlots(s_paused);
-        break;
-      }
-      case fabgl::VK_l: case fabgl::VK_L: {
-        if (!n)
-          break;
-        int s = askSlot("Load from slot 1 or 2? (Esc)");
-        if (!s)
-          break;
-        if (Serial.available()) {             // over serial the game's number follows
-          int idx = Serial.parseInt();
-          if (idx >= 0 && idx < n)
-            selected = idx;
-        }
-        if (!slotUsed(g_roms[selected], s)) {
-          message = s == 1 ? "Slot 1 is empty" : "Slot 2 is empty";
-          break;
-        }
-        *slot = s;
-        return selected;
-      }
-      case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
-        if (n && g_roms[selected].manual) {
-          showManual(g_roms[selected]);
-          s_shown.valid = false;
-        } else
-          message = "No manual for this game";
-        break;
-      case fabgl::VK_UP:       case fabgl::VK_KP_UP:       if (n) selected = (selected + n - 1) % n; break;
-      case fabgl::VK_DOWN:     case fabgl::VK_KP_DOWN:     if (n) selected = (selected + 1) % n; break;
-      case fabgl::VK_PAGEUP:   case fabgl::VK_KP_PAGEUP:   selected = std::max(0, selected - visible); break;
-      case fabgl::VK_PAGEDOWN: case fabgl::VK_KP_PAGEDOWN: if (n) selected = std::min(n - 1, selected + visible); break;
-      case fabgl::VK_LEFT:     case fabgl::VK_KP_LEFT:
-        s_regionChoice = (RegionChoice)(((int)s_regionChoice + 2) % 3);
-        break;
-      case fabgl::VK_RIGHT:    case fabgl::VK_KP_RIGHT:
-        s_regionChoice = (RegionChoice)(((int)s_regionChoice + 1) % 3);
-        break;
-      case fabgl::VK_RETURN:   case fabgl::VK_KP_ENTER:    case fabgl::VK_SPACE:
-        if (n)
-          return selected;
-        break;
-      default:
-        break;
-    }
   }
 }
 
@@ -2102,7 +1803,7 @@ struct FileSource : StateSource {
 
 
 // Saves the paused game's state. Refuses when SPIFFS would get too full; writes a new file first
-// and only then replaces the slot, so a failed save leaves the old state. Returns a message.
+// and only then replaces the slot, so a failed save leaves the old state. Returns nullptr or a message.
 static char const * saveSlot(int idx, int slot)
 {
   if (nes.isNsf())
@@ -2136,9 +1837,7 @@ static char const * saveSlot(int idx, int slot)
   s_soundGen->play(true);
   Serial.printf("State %s %s: %u bytes, %u ms, SPIFFS %u of %u bytes used\n", path.c_str(), ok ? "saved" : "NOT saved",
                 (unsigned) size, (unsigned)(millis() - t0), (unsigned) SPIFFS.usedBytes(), (unsigned) SPIFFS.totalBytes());
-  if (!ok)
-    return "Saving the state failed";
-  return slot == 1 ? "Saved in slot 1" : "Saved in slot 2";
+  return ok ? nullptr : "Saving the state failed";
 }
 
 
@@ -3082,6 +2781,8 @@ static void runGame()
         return;
       if (c == 'c')
         toggleCheats();
+      if (c == 'Z')
+        sendScreenshot();
       if (c == 'P')
         tapePlay();
       if (c == 'R')
@@ -3208,6 +2909,579 @@ static void runGame()
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// the main menu (see MenuMockup.txt): the games with the selected one's picture and facts, Start
+// opens the options over it. Drawn through the text grid (ui.h), which redraws only what changed.
+
+// The game in the console while the menu shows: leaving it through the system menu pauses it
+// (nothing is copied, the console just waits), A on it carries on. Starting or loading another
+// game ends it. -1: none.
+static int s_paused = -1;
+
+// what a menu reads: the pad's buttons, from the keys mapped to them, real pads or the serial console
+enum MenuKey { MK_NONE, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_A, MK_B, MK_START, MK_SELECT,
+               MK_PAGEUP, MK_PAGEDOWN, MK_ROM, MK_1, MK_2, MK_3 };
+static int s_serialRom;              // MK_ROM: the game's number sent over serial
+
+// The framebuffer to the serial console, a line of 256 characters '0' + raw pixel & 63 each
+// (tools/screenshot.py makes a PNG of it).
+static void sendScreenshot()
+{
+  char line[257];
+  for (int y = 0; y < 240; ++y) {
+    for (int x = 0; x < 256; ++x)
+      line[x] = '0' + (s_lines[y][x ^ 2] & 63);
+    line[256] = 0;
+    Serial.printf("Screen: %s\n", line);
+  }
+}
+
+
+// Waits up to 100 ms for a button. Keys: arrows, Enter = A and Esc = B besides the pad's keys.
+// Serial: u d l r a b e(select) s(tart) as in a game, a number picks that game, Z a screenshot.
+static MenuKey menuKey()
+{
+  static const MenuKey buttons[8] = { MK_A, MK_B, MK_SELECT, MK_START, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT };
+  static uint8_t  padsBefore;
+  static uint32_t repeatAt;
+  auto kb = PS2.keyboard();
+  for (uint32_t start = millis(); millis() - start < 100; ) {
+    if (kb->virtualKeyAvailable()) {
+      fabgl::VirtualKeyItem item;
+      if (!kb->getNextVirtualKey(&item, 0) || !item.down)
+        continue;
+      using namespace fabgl;
+      switch (item.vk) {
+        case VK_UP:       case VK_KP_UP:       return MK_UP;
+        case VK_DOWN:     case VK_KP_DOWN:     return MK_DOWN;
+        case VK_LEFT:     case VK_KP_LEFT:     return MK_LEFT;
+        case VK_RIGHT:    case VK_KP_RIGHT:    return MK_RIGHT;
+        case VK_PAGEUP:   case VK_KP_PAGEUP:   return MK_PAGEUP;
+        case VK_PAGEDOWN: case VK_KP_PAGEDOWN: return MK_PAGEDOWN;
+        case VK_RETURN:   case VK_KP_ENTER:    return MK_A;
+        case VK_ESCAPE:                        return MK_B;
+        default: break;
+      }
+      VirtualKey vk = canonKey(positionKey(item));
+      for (int p = 0; p < 2; ++p)
+        for (int b = 0; b < 8; ++b)
+          if (s_padKeys[p][b] == vk)
+            return buttons[b];
+      if (vk >= VK_1 && vk <= VK_3)               // the digit keys not mapped to the pad
+        return (MenuKey)(MK_1 + (vk - VK_1));
+      continue;
+    }
+    if (Serial.available()) {
+      int c = Serial.peek();
+      if (isdigit(c)) {
+        s_serialRom = Serial.parseInt();
+        return MK_ROM;
+      }
+      Serial.read();
+      if (c == 'Z')
+        sendScreenshot();
+      static char const keys[] = "abesudlr";
+      if (char const * k = strchr(keys, c))
+        return buttons[k - keys];
+      continue;
+    }
+    // real pads: a new press, or a held direction repeating
+    uint8_t hw[2];
+    readHardwarePads(hw);
+    uint8_t pads = filterPad(hw[0] | hw[1]), pressed = pads & ~padsBefore;
+    padsBefore = pads;
+    if (pressed)
+      repeatAt = millis() + 400;
+    else if ((pads & 0xf0) && (int32_t)(millis() - repeatAt) >= 0) {
+      pressed = pads & 0xf0;
+      repeatAt = millis() + 120;
+    }
+    for (int b = 0; b < 8; ++b)
+      if (pressed & (1 << b))
+        return buttons[b];
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  return MK_NONE;
+}
+
+
+// "Are you sure?": a box over whatever is on the screen; lines split at '\n'. A is yes, B no.
+static bool confirm(char const * text)
+{
+  std::vector<String> lines;
+  for (char const * p = text; ; ) {
+    char const * end = strchr(p, '\n');
+    lines.push_back(end ? String(p).substring(0, end - p) : String(p));
+    if (!end)
+      break;
+    p = end + 1;
+  }
+  int w = 18;
+  for (auto const & l : lines)
+    w = std::max(w, std::min(ui::COLS, l.length() + 4));
+  int h = lines.size() + 4, col = (ui::COLS - w) / 2, row = (ui::ROWS - h) / 2;
+  ui::box(col, row, w, h);
+  for (int i = 0; i < (int) lines.size(); ++i)
+    ui::put(col + 2, row + 1 + i, lines[i].c_str());
+  ui::divider(col, row + h - 3, w);
+  ui::hint(col + 2, row + h - 2, "A: Yes   B: No");
+  for (;;) {
+    ui::flush();
+    switch (menuKey()) {
+      case MK_A:                return true;
+      case MK_B: case MK_START: return false;
+      default:                  break;
+    }
+  }
+}
+
+
+// the region menu choice's name
+static char const * regionChoiceName()
+{
+  static char const * const names[] = { "Auto", "NTSC", "PAL" };
+  return names[(int) s_regionChoice];
+}
+
+
+static bool wantsKeyboard(RomBlob const & rom, RomConfig const & cfg)
+{
+  return cfg.keyboard >= 0 ? cfg.keyboard : strstr(rom.name, "BASIC") != nullptr;
+}
+
+
+// what the menu tells about a game, gathered when it is selected
+struct GameFacts {
+  int          idx = -1;
+  bool         music;
+  char         size[12];
+  char         mapper[12];
+  bool         supported;
+  char const * features[6];
+  int          featureCount;
+  int          cheats;
+  bool         slots[2];
+};
+
+static void gatherFacts(int idx, GameFacts & f)
+{
+  RomBlob const & rom = g_roms[idx];
+  f.idx = idx;
+  f.featureCount = 0;
+  f.cheats = 0;
+  f.slots[0] = f.slots[1] = false;
+  f.supported = true;
+  f.music = isNsf(rom.data, rom.size);
+  if (f.music) {
+    NsfInfo info;
+    if (parseNsf(rom.data, rom.size, &info))
+      info.chips = 0;
+    snprintf(f.size, sizeof(f.size), "%uk", (unsigned)((rom.size - 128 + 1023) / 1024));
+    snprintf(f.mapper, sizeof(f.mapper), "NSF");
+    static char const * const chips[] = { "VRC6", "VRC7", "FDS", "MMC5", "Namco163", "Sunsoft5B" };
+    for (int i = 0; i < 6; ++i)
+      if (info.chips & (1 << i))
+        f.features[f.featureCount++] = chips[i];
+    return;
+  }
+  Cart cart;
+  if (parseRom(rom.data, rom.size, &cart)) {
+    snprintf(f.size, sizeof(f.size), "?");
+    snprintf(f.mapper, sizeof(f.mapper), "?");
+    f.supported = false;
+    return;
+  }
+  RomInfo const & info = cart.info;
+  snprintf(f.size, sizeof(f.size), "%dk", (info.prgSize + info.chrSize) / 1024);
+  static const struct { int number; char const * name; } names[] = {
+    { 0, "NROM" }, { 1, "MMC1" }, { 2, "UxROM" }, { 3, "CNROM" }, { 4, "MMC3" }, { 5, "MMC5" },
+    { 7, "AxROM" }, { 9, "MMC2" }, { 10, "MMC4" }, { 69, "FME-7" }, { 71, "Camerica" }, { 85, "VRC7" },
+  };
+  snprintf(f.mapper, sizeof(f.mapper), "#%d", info.mapper);
+  for (auto const & n : names)
+    if (n.number == info.mapper)
+      snprintf(f.mapper, sizeof(f.mapper), "%s", n.name);
+  f.supported = mapperSupported(info.mapper);
+
+  RomConfig cfg = parseConfig(rom.config);
+  bool battery = cfg.save >= 0 ? cfg.save : info.battery;
+  if (battery)
+    f.features[f.featureCount++] = "SRAM+Bat";
+  else if (info.nes20 && (rom.data[10] & 0x0f))
+    f.features[f.featureCount++] = "SRAM";
+  if (!info.chrSize)
+    f.features[f.featureCount++] = "CHRRAM";
+  if (rom.tapeTrap)
+    f.features[f.featureCount++] = "Tape";
+  if (wantsKeyboard(rom, cfg))
+    f.features[f.featureCount++] = "Keyboard";
+
+  std::vector<String> codes;
+  loadCheatCodes(rom, codes);
+  f.cheats = codes.size();
+  f.slots[0] = slotUsed(rom, 1);
+  f.slots[1] = slotUsed(rom, 2);
+}
+
+
+// main menu layout: the list's rows, the picture's cells
+static constexpr int LIST_ROW = 12, LIST_ROWS = 15;
+static constexpr int PIC_COL = 4, PIC_ROW = 3;
+
+static void drawLogo(int col, int row)
+{
+  // 4 x 2 glyphs of the font (0xEC-0xEF over 0xFC-0xFF): a cartridge in light grey, the name in red
+  ui::put(col, row, "\xec\xed", ui::BRIGHT);
+  ui::put(col, row + 1, "\xfc\xfd", ui::BRIGHT);
+  ui::put(col + 2, row, "\xee\xef", ui::RED);
+  ui::put(col + 2, row + 1, "\xfe\xff", ui::RED);
+}
+
+
+static void drawMainMenu(int selected, int top, GameFacts const & f)
+{
+  using namespace ui;
+  clear();
+  drawLogo(1, 0);
+  char text[33];
+  snprintf(text, sizeof(text), "TV:%s", regionChoiceName());
+  put(COLS - strlen(text), 0, text);
+  put(COLS - 5, 1, "ESP32");
+
+  // the list, joined to the picture's frame
+  box(3, 2, 10, 10);
+  box(0, 11, COLS, ROWS - 11);
+  putc(3, 11, G_UT, LINE);
+  putc(12, 11, G_UT, LINE);
+  divider(0, ROWS - 3, COLS);
+  hint(1, ROWS - 2, "+: Cursor  Start: Menu  A: Run");
+
+  if (!g_romCount) {
+    put(2, LIST_ROW + 1, "No ROMs built in.", RED);
+    put(2, LIST_ROW + 3, "Put .nes files in roms/ and");
+    put(2, LIST_ROW + 4, "run pio run -t upload");
+    return;
+  }
+  picture(PIC_COL, PIC_ROW, PICTURE_SIZE / 8, PICTURE_SIZE / 8);
+
+  // the selected game's facts
+  put(18, 2, "Size:");
+  put(24, 2, f.size);
+  put(16, 3, "Mapper:");
+  put(24, 3, f.mapper, f.supported ? TEXT : RED);
+  put(14, 4, f.music ? "   Chips:" : "Features:");
+  if (!f.featureCount)
+    put(24, 4, "-", GREY);
+  for (int i = 0; i < f.featureCount && i < 4; ++i)
+    put(24, 4 + i, f.features[i]);
+  if (!f.music) {
+    put(14, 9, "Cheats   :");
+    if (f.cheats) {
+      snprintf(text, sizeof(text), "%d", f.cheats);
+      put(25, 9, text);
+    } else
+      putc(25, 9, G_CROSS, GREY);
+    put(14, 10, "Savestate:");
+    for (int s = 0; s < 2; ++s)
+      putc(25 + 2 * s, 10, f.slots[s] ? G_CHECK : G_CROSS, f.slots[s] ? GREEN : GREY);
+  }
+
+  // the games: an icon, the name; the paused one in green with a play arrow
+  for (int r = 0; r < LIST_ROWS && top + r < g_romCount; ++r) {
+    int idx = top + r;
+    RomBlob const & rom = g_roms[idx];
+    bool sel = idx == selected, paused = idx == s_paused;
+    uint8_t bg = sel ? SEL_BG : BLACK;
+    fill(1, LIST_ROW + r, COLS - 2, 1, ' ', TEXT, bg);
+    putc(1, LIST_ROW + r, paused ? G_PLAY : isNsf(rom.data, rom.size) ? G_NOTE : G_MODULE,
+         paused ? GREEN : sel ? SEL_TEXT : TEXT, bg);
+    snprintf(text, COLS - 2, "%s", rom.title);
+    put(2, LIST_ROW + r, text, sel ? SEL_TEXT : paused ? GREEN : TEXT, bg);
+  }
+  if (top > 0)
+    putc(COLS - 1, LIST_ROW, G_UP, TEXT);
+  if (top + LIST_ROWS < g_romCount)
+    putc(COLS - 1, LIST_ROW + LIST_ROWS - 1, G_DOWN, TEXT);
+}
+
+
+// the About screen, until a button; 1, 2 and 3 play the message sounds (a hidden sound test,
+// also over serial)
+static void aboutScreen()
+{
+  using namespace ui;
+  static char flashFree[16];
+  if (!flashFree[0]) {
+    // what the firmware leaves of its partition (the image's size takes a read of it all)
+    esp_partition_t const * app = esp_ota_get_running_partition();
+    esp_image_metadata_t meta = { };
+    esp_partition_pos_t pos = { app->address, app->size };
+    if (esp_image_get_metadata(&pos, &meta) == ESP_OK)
+      snprintf(flashFree, sizeof(flashFree), "%u KB", (unsigned)((app->size - meta.image_len) / 1024));
+    else
+      snprintf(flashFree, sizeof(flashFree), "?");
+  }
+  esp_chip_info_t chip;
+  esp_chip_info(&chip);
+  uint32_t flashSize = 0;
+  esp_flash_get_size(nullptr, &flashSize);
+  esp_partition_t const * spiffs = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+
+  clear();
+  drawLogo(1, 0);
+  put(8, 0, "ESPNES (c) 2026", YELLOW);
+  put(7, 1, "by Bastet and Claude", YELLOW);
+  char text[33];
+  snprintf(text, sizeof(text), "MCU Version  : ESP32 rev %d.%d", chip.revision / 100, chip.revision % 100);
+  put(0, 3, text);
+  snprintf(text, sizeof(text), "MCU Core     : Xtensa LX6 x%d", chip.cores);
+  put(0, 4, text);
+  put(0, 5, "Video Core   : FabGL");
+  snprintf(text, sizeof(text), "Flash Size   : %u KB", (unsigned)(flashSize / 1024));
+  put(0, 6, text);
+  snprintf(text, sizeof(text), "Flash Free   : %s", flashFree);
+  put(0, 7, text);
+  snprintf(text, sizeof(text), "SPIFFS Size  : %u KB", spiffs ? (unsigned)(spiffs->size / 1024) : 0);
+  put(0, 8, text);
+  put(0, 10, "This emulator is");
+  put(0, 11, "Free Open Source Software");
+  put(0, 12, "released under the GPLv3.");
+  put(0, 14, "If you paid extra for it you");
+  put(0, 15, "probably got scammed and");
+  put(0, 16, "should ask for a refund");
+  put(0, 17, "immediately!");
+  put(0, 19, "Source and more information:");
+  put(0, 20, "github.com/bastetfurry/espnes", CYAN);
+  put(0, 22, "FabGL and DBOPL used under");
+  put(0, 23, "the GPL licence.");
+  put(0, 24, "See the github page for details!");
+  box(0, ROWS - 3, COLS, 3);
+  hint(23, ROWS - 2, "A: Back");
+  for (;;) {
+    flush();
+    MenuKey k = menuKey();
+    if (k == MK_A || k == MK_B || k == MK_START)
+      return;
+    if (k == MK_ROM && s_serialRom >= 1 && s_serialRom <= 3)
+      k = (MenuKey)(MK_1 + s_serialRom - 1);
+    if (k >= MK_1 && k <= MK_3)
+      sound((ui::Kind)(k - MK_1));
+  }
+}
+
+
+// The options over the main menu (Start). Returns true to start the selected game, from *slot
+// when that is set.
+enum class Opt { MANUAL, SAVE, LOAD, CHEATS, MEMORY, TV, JOYPAD, FILES, ABOUT, QUIT };
+
+static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
+{
+  static constexpr int COL = 7, ROW = 8, W = 18, H = 14;
+  static const Opt items[] = { Opt::MANUAL, Opt::SAVE, Opt::LOAD, Opt::CHEATS, Opt::MEMORY,
+                               Opt::TV, Opt::JOYPAD, Opt::FILES, Opt::ABOUT, Opt::QUIT };
+  static constexpr int COUNT = sizeof(items) / sizeof(items[0]);
+  RomBlob const & rom = g_roms[selected];
+  int saveChoice = 1, loadChoice = 1;
+
+  auto enabled = [&](Opt o) {
+    switch (o) {
+      case Opt::MANUAL: return rom.manual != nullptr;
+      case Opt::SAVE:   return s_paused == selected && !facts.music;
+      case Opt::LOAD:   return facts.slots[0] || facts.slots[1];
+      case Opt::CHEATS: return !facts.music;
+      case Opt::MEMORY: return false;                // to come
+      case Opt::QUIT:   return s_paused >= 0;
+      default:          return true;
+    }
+  };
+  int sel = 0;
+  while (!enabled(items[sel]))
+    ++sel;
+  auto move = [&](int step) {
+    int s = sel;
+    do
+      s = (s + COUNT + step) % COUNT;
+    while (!enabled(items[s]));
+    sel = s;
+  };
+
+  for (;;) {
+    // the menu under it, then the box
+    drawMainMenu(selected, top, facts);
+    ui::box(COL, ROW, W, H);
+    for (int i = 0; i < COUNT; ++i) {
+      Opt o = items[i];
+      int row = ROW + 1 + i;
+      bool on = i == sel, ok = enabled(o);
+      uint8_t bg = on ? ui::SEL_BG : ui::BLACK, fg = on ? ui::SEL_TEXT : ok ? ui::TEXT : ui::GREY;
+      static char const * const names[] = { "Manual", "Save State", "Load State", "Cheats", "Edit Memory",
+                                            "TV", "Config Joypad", "Files", "About", "Quit Current" };
+      ui::fill(COL + 1, row, W - 2, 1, ' ', fg, bg);
+      ui::put(COL + 2, row, names[i], fg, bg);
+      if (o == Opt::SAVE || o == Opt::LOAD) {
+        // the slots: green with a state, grey without; the chosen one inverted
+        int chosen = o == Opt::SAVE ? saveChoice : loadChoice;
+        for (int s = 1; s <= 2; ++s) {
+          uint8_t c = facts.slots[s - 1] ? ui::GREEN : ui::GREY;
+          bool inv = on && s == chosen;
+          ui::putc(COL + 11 + 2 * s, row, '0' + s, !inv ? c : c == ui::GREEN ? (uint8_t) ui::BLACK : (uint8_t) ui::BRIGHT, inv ? c : bg);
+        }
+      }
+      if (o == Opt::TV) {
+        char text[8];
+        snprintf(text, sizeof(text), "[%s]", regionChoiceName());
+        ui::put(COL + W - 2 - strlen(text), row, text, fg, bg);
+      }
+    }
+    ui::divider(COL, ROW + H - 3, W);
+    ui::hint(COL + 2, ROW + H - 2, "A: OK B: Back");
+    if (ui::flush())                  // back from a screen of its own
+      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8);
+
+    MenuKey key = menuKey();
+    Opt o = items[sel];
+    switch (key) {
+      case MK_UP:   move(-1); break;
+      case MK_DOWN: move(1); break;
+      case MK_B: case MK_START:
+        return false;
+      case MK_LEFT: case MK_RIGHT:
+        if (o == Opt::SAVE)
+          saveChoice = 3 - saveChoice;
+        else if (o == Opt::LOAD)
+          loadChoice = 3 - loadChoice;
+        else if (o == Opt::TV)
+          s_regionChoice = (RegionChoice)(((int) s_regionChoice + (key == MK_LEFT ? 2 : 1)) % 3);
+        break;
+      case MK_A:
+        switch (o) {
+          case Opt::MANUAL:
+            showManual(rom);
+            ui::invalidate();
+            break;
+          case Opt::SAVE: {
+            char question[24];
+            snprintf(question, sizeof(question), "Overwrite slot %d?", saveChoice);
+            if (facts.slots[saveChoice - 1] && !confirm(question))
+              break;
+            if (char const * err = saveSlot(s_paused, saveChoice)) {
+              ui::message(ui::BAD, err);
+              break;
+            }
+            snprintf(question, sizeof(question), "Saved in slot %d", saveChoice);
+            ui::message(ui::GOOD, question);
+            gatherFacts(selected, facts);
+            return false;
+          }
+          case Opt::LOAD:
+            if (!facts.slots[loadChoice - 1]) {
+              ui::message(ui::BAD, loadChoice == 1 ? "Slot 1 is empty" : "Slot 2 is empty");
+              break;
+            }
+            if (s_paused >= 0 && !confirm(s_paused == selected ? "Load over the\nrunning game?" : "Quit the\nrunning game?"))
+              break;
+            *slot = loadChoice;
+            return true;
+          case Opt::CHEATS:
+            editCheats(rom);
+            if (selected == s_paused)
+              applyCheats(rom);
+            ui::invalidate();
+            gatherFacts(selected, facts);
+            break;
+          case Opt::TV:
+            s_regionChoice = (RegionChoice)(((int) s_regionChoice + 1) % 3);
+            break;
+          case Opt::JOYPAD: {
+            char const * msg = editPadKeys();
+            ui::invalidate();
+            if (msg)
+              ui::message(strcmp(msg, "Keys saved") ? ui::NEUTRAL : ui::GOOD, msg);
+            break;
+          }
+          case Opt::FILES:
+            if (fileManager())
+              ui::message(ui::GOOD, "Files deleted");
+            ui::invalidate();
+            gatherFacts(selected, facts);
+            break;
+          case Opt::ABOUT:
+            aboutScreen();
+            break;
+          case Opt::QUIT:
+            if (confirm("Quit the\nrunning game?")) {
+              s_paused = -1;
+              ui::message(ui::NEUTRAL, "Game quit");
+              return false;
+            }
+            break;
+          default:
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+
+// Shows the list until a game is picked. Returns its index, and in *slot the savestate slot to
+// start it from (0: none; for the paused game that means carrying on).
+static int chooseRom(int * slot)
+{
+  *slot = 0;
+  static int selected = 0;
+  GameFacts facts;
+  int shownPicture = -1;
+  listRoms();
+  ui::invalidate();                   // a game or something else was on the screen
+  ui::messageArea(6, ui::COLS - 6);
+  if (selected >= g_romCount)
+    selected = 0;
+  if (s_paused >= 0)
+    selected = s_paused;
+  int n = g_romCount;
+  for (;;) {
+    int top = std::max(0, std::min(selected - LIST_ROWS / 2, n - LIST_ROWS));
+    if (n && facts.idx != selected)
+      gatherFacts(selected, facts);
+    drawMainMenu(selected, top, facts);
+    if ((ui::flush() || shownPicture != selected) && n) {
+      drawPicture(selected, PIC_COL * 8, PIC_ROW * 8);
+      shownPicture = selected;
+    }
+
+    MenuKey key = menuKey();
+    switch (key) {
+      case MK_ROM:                    // over serial: start that game straight away
+        if (s_serialRom >= 0 && s_serialRom < n) {
+          selected = s_serialRom;
+          return selected;
+        }
+        break;
+      case MK_UP:       if (n) selected = (selected + n - 1) % n; break;
+      case MK_DOWN:     if (n) selected = (selected + 1) % n; break;
+      case MK_LEFT:  case MK_PAGEUP:   selected = std::max(0, selected - LIST_ROWS); break;
+      case MK_RIGHT: case MK_PAGEDOWN: if (n) selected = std::min(n - 1, selected + LIST_ROWS); break;
+      case MK_START:
+        if (n && optionsMenu(selected, top, facts, slot))
+          return selected;
+        shownPicture = -1;            // the box covered it
+        break;
+      case MK_A:
+        if (!n)
+          break;
+        if (s_paused >= 0 && selected != s_paused && !confirm("Quit the\nrunning game?"))
+          break;
+        return selected;
+      default:
+        break;
+    }
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
 
 void setup()
 {
@@ -3225,7 +3499,6 @@ void setup()
   s_canvas->selectFont(&FONT_8x8);
   s_canvas->setGlyphOptions(GlyphOptions().FillBackground(true));
 
-  char const * message = nullptr;
   // for save games later; an unformatted partition is formatted on the first boot
   if (!SPIFFS.begin(true))
     Serial.println("SPIFFS could not be mounted");
@@ -3240,24 +3513,25 @@ void setup()
 
   for (;;) {
     int slot;
-    int idx = chooseRom(message, &slot);
-    message = nullptr;
+    int idx = chooseRom(&slot);
     if (idx != s_paused || slot) {
       // a new game: the paused one ends
       s_paused = -1;
-      message = loadRom(g_roms[idx]);
-      if (!message && slot)
-        message = loadSlot(g_roms[idx], slot);
-      if (message)
+      char const * err = loadRom(g_roms[idx]);
+      if (!err && slot)
+        err = loadSlot(g_roms[idx], slot);
+      if (err) {
+        ui::message(ui::BAD, err);
         continue;
+      }
     }
     s_canvas->waitCompletion();
     runGame();
     storeSave();
     // the console waits as it is, unless the game crashed it
     s_paused = nes.cpu.jammed ? -1 : idx;
-    if (s_paused >= 0)
-      message = "Paused: Enter goes on, S saves";
+    if (nes.cpu.jammed)
+      ui::message(ui::BAD, "The game crashed the CPU");
   }
 }
 

@@ -67,7 +67,7 @@ are emulated at 50 frames per second on the 60 Hz signal.
 | Start  | Space      | *                 |
 | Mic    |            | +                 |
 
-These are the defaults. K in the ROM list opens the key mapper: pick the player (1 or 2), then a
+These are the defaults. Config Joypad in the main menu's options opens the key mapper: pick the player (1 or 2), then a
 drawn pad shows the button being set blinking; press a key for each button in turn (Up, Down,
 Left, Right, Select, Start, B, A, and for player 2 the Mic). A key another button (of either
 player) already has swaps with it, Esc cancels. The keys are the same for all games and kept in
@@ -162,12 +162,13 @@ connected). Real pads and keys work at the same time.
 
 ## Savestates
 
-"Back to the ROM list" in the system menu (SysRq) pauses the game and shows the ROM list, with a green arrow at the paused game. Enter on it
-carries on where it was; starting or loading another game ends it. Nothing is copied for that: the
+"Back to the ROM list" in the system menu (SysRq) pauses the game and shows the main menu, with the paused game in green
+and a play arrow. A on it carries on where it was; starting or loading another game asks first, then ends it. Nothing is copied for that: the
 console just waits.
 
-S in the list saves the paused game's state in slot 1 or 2, L loads the selected game from one.
-Each game has two slots; under the picture the list shows which hold a state. A state is 1-12 KB
+Save State in the options saves the paused game's state in slot 1 or 2 (Left/Right picks it),
+Load State loads the selected game from one; overwriting a state asks first. Each game has two
+slots; next to the picture the menu shows which hold a state. A state is 1-12 KB
 (SMB 1.5 KB, Zelda 12-14 KB): the console's RAM, nametables, sprites and palette, the cartridge's
 RAM and CHR RAM, and the registers, compressed with a small LZ that needs no buffer
 (`src/nes/state.h`). They are files in SPIFFS next to the saves (`.st1`, `.st2`); a save is
@@ -178,7 +179,7 @@ A state includes the battery backed RAM: after loading one, leaving the game wri
 game's save file, as an emulator does. States belong to this version of the emulator; one made by
 a version with a different state format is refused (`STATE_VERSION` in `src/nes/nes.cpp`).
 
-F in the list opens the file manager: everything in SPIFFS by game (saves, codes, states, the
+Files in the options opens the file manager: everything in SPIFFS by game (saves, codes, states, the
 keys) with its size, and how full SPIFFS is. Files of games that are no longer built in are red:
 their names carry the CRC of a ROM no game in the list has. Del deletes the selected file, O all
 files of removed games; both ask first.
@@ -186,11 +187,13 @@ files of removed games; both ask first.
 `host/nestool run ... statetest=F` saves a state at frame F, runs to the end, loads it and runs the
 same frames again: picture, RAM and CPU must come out the same (all games here do).
 
-SysRq (Alt+PrtScr) opens the system menu, in every game (see below). Esc belongs to the game; in menus and dialogs it goes back. F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the tape, and F10 switches cheats. In the list, Left/Right picks the TV system
+The main menu works with the pad (its keys, or a real pad): Up/Down pick a game, Left/Right turn a page, A starts it, Start opens the options over it (manual, savestates, cheats, TV system, key mapper, files, about, quitting the paused game). Enter works as A and Esc as B. Messages show for a few seconds in the top line, with a sound: green for good news, yellow for neutral, red for errors.
+
+SysRq (Alt+PrtScr) opens the system menu, in every game (see below). Esc belongs to the game; in menus and dialogs it goes back. F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the tape, and F10 switches cheats. TV in the options picks the TV system
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `m` and a number shows its manual (`n`/`p` turn pages, `x` leaves), `s` and a slot saves the paused game's state, `l`, a slot and a game number (`l1 0`) loads one, `f` opens the file manager (`n`/`p` select, `d` deletes, `o` deletes the files of removed games, `y` confirms, `~` leaves), `k` opens the key mapper (`1`/`2` picks the player, then a letter, digit or space sets the next button, `^` takes the player's defaults, `~` cancels), `q` leaves the game, `y` opens the system menu (`n`/`p` select, `o` does it, `<`/`>` volume, `~` closes), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
+that ROM, `a b e s u d l r` are the pad's buttons in the menus as in games (A, B, Select, Start and the directions), `Z` sends a screenshot (`tools/screenshot.py --keys ... out.png` makes a PNG of it, in menus and games). In the screens opened from the options: the manual turns pages with `n`/`p` and leaves with `x`; the file manager takes `n`/`p` to select, `d` to delete, `o` for the files of removed games, `y` to confirm, `~` to leave; the key mapper `1`/`2` for the player, then a letter, digit or space for the next button, `^` for the player's defaults, `~` to cancel. `q` leaves the game, `y` opens the system menu (`n`/`p` select, `o` does it, `<`/`>` volume, `~` closes), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
 
 ## ROMs
 
@@ -219,8 +222,8 @@ instead of 4 KB) and unpacked with the inflate in the ESP32's mask ROM, so the d
 flash. A missing picture is a build warning and an empty square in the menu.
 `python3 tools/nesimage.py picture.png preview.ppm` shows what a picture will look like.
 
-The manual is a text file in `roms/` of teletext style pages, 32 columns by 25 lines, opened with M
-or Tab in the menu (Left/Right turn the pages, Esc goes back):
+The manual is a text file in `roms/` of teletext style pages, 32 columns by 25 lines, opened with Manual
+in the main menu's options (Left/Right turn the pages, Esc goes back):
 
 ```
 [PAGESTART=1]
@@ -370,7 +373,7 @@ changes every session and gets written on every return to the list.
 
 ## Cheat codes
 
-G in the ROM list opens the selected game's codes: type a code and Enter adds it, Up/Down selects,
+Cheats in the main menu's options opens the selected game's codes: type a code and Enter adds it, Up/Down selects,
 Del removes, Esc saves and goes back. Each code shows what it decodes to.
 
 - **Game Genie:** 6 or 8 letters (`SXIOPO`). They patch what the CPU reads from ROM: an 8 KB page a

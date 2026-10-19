@@ -14,6 +14,25 @@ The games are built into the firmware.
 
 Source and more information: [github.com/bastetfurry/espnes](https://github.com/bastetfurry/espnes)
 
+## Why?
+
+I had an old ESP32 LILYGO VGA board in my drawer that was collecting moths and i wanted to check out if
+Claude could make me a NES emulator out of it. Mario jumped on a Goomba after just 15 minutes. 
+I mean, yes, NES emulators are a solved problem, so no big surprises here, just that Claude used the docs 
+on nesdev and not other peoples code. That's what flashed me here.
+
+Anyway, i instructed Claude to include all the fancy features i wanted in such an emulator, 
+you can even use FamilyBASIC, which makes this a little home computer if you will.
+
+One little drawback that came with the platform, the board has no SD card and no PSRAM, so ROMs had to be
+baked right into the program flashed on the ESP32, which gives one roughly 3 MBytes to work with. 
+Which in turn means you have to compile this yourself to use it. Though, if you know your way around computers
+this is deadpan easy. The lazy method is checking out this repository, install VSCode, inside there install the PlatformIO extension, throw some of your backed up ROMs (... yeah, right ...) into the roms directory and hit that little checkmark at the bottom left to see if everything compiles. If all goes well, hit the arrow next to the checkmark to upload.
+
+Even without a settings.csv it goes through, adds your games with default settings and names from the files and you should be able to play. If you want to make a permanent device with the games you cherish though then check out the settings.csv file though to add pictures and even a short manual.
+
+Anyway, that's all from me, giving the keys back to Claude.
+
 ## Getting started
 
 ### What it runs on
@@ -47,8 +66,8 @@ File name, name shown in the menu, picture, manual, options (see "Per game setti
 CSV does not list is still built in, at the end under its file name, with a warning; a game's
 line commented out with `#` leaves that game out of the build. A malformed line (a missing quote,
 say) is reported and skipped. Changing the games means rebuilding and flashing: nothing is
-written to flash at runtime. The firmware partition is 3.4 MB, so about 2.7 MB of games fit next
-to the code.
+written to flash at runtime. The firmware partition is 3.4 MB and the emulator takes about 490 KB of
+it, so about 3 MB of games fit (the About screen shows what is left, as Flash Free).
 
 No commercial ROMs are included. Some that can be had legally:
 
@@ -79,7 +98,7 @@ Real NES pads work at the same time as the keys.
 
 Everything works with a pad alone: the menus take the pad's buttons (the hints at the bottom of
 each screen name them, the button in red), and **A+B+Select+Start** on pad 1 opens the system
-menu in a game. On the keyboard, **SysRq** (Alt+PrintScreen) opens it, the same key as in ESPPC;
+menu in a game. On the keyboard, **SysRq** (Alt+PrintScreen) opens it.
 Enter works as A and Esc goes back in the menus. Esc in a game belongs to the game.
 
 In a game, also: F1 resets, F2/F3 turn the volume down/up, F5/F6/F7 play, record and stop the

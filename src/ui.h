@@ -16,7 +16,7 @@ namespace ui {
 static constexpr int COLS = 32, ROWS = 30;
 
 enum Colour : uint8_t {
-  BLACK, LINE, TEXT, GREY, SEL_BG, SEL_TEXT, RED, GREEN, YELLOW, BRIGHT, CYAN,
+  BLACK, LINE, TEXT, GREY, SEL_BG, SEL_TEXT, RED, GREEN, YELLOW, BRIGHT, CYAN, MAGENTA,
   COLOURS
 };
 

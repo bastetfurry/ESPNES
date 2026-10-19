@@ -92,7 +92,7 @@ static void initVideo()
   // the menus' colours (ui::Colour)
   static const RGB222 uiColours[ui::COLOURS] = {
     { 0, 0, 0 }, { 0, 0, 3 }, { 3, 3, 3 }, { 1, 1, 1 }, { 0, 0, 2 }, { 3, 3, 0 },
-    { 3, 0, 0 }, { 0, 3, 0 }, { 3, 3, 0 }, { 3, 3, 3 }, { 0, 3, 3 },
+    { 3, 0, 0 }, { 0, 3, 0 }, { 3, 3, 0 }, { 3, 3, 3 }, { 0, 3, 3 }, { 3, 0, 3 },
   };
   uint8_t uiRaw[ui::COLOURS];
   for (int i = 0; i < ui::COLOURS; ++i)
@@ -239,125 +239,6 @@ static void drawPicture(int idx, int left, int top, bool masked = false)
         line[(left + x) ^ 2] = s_raw[pic ? pic[y * PICTURE_SIZE + x] & 0x3f : 0x0f];
   }
   free(u);
-}
-
-
-// The manual viewer: a teletext style page per screen, Left/Right or Page Up/Down to turn pages,
-// Esc (or M, Tab) to go back. Over serial: n(ext), p(revious), x to leave.
-static void showManual(RomBlob const & rom)
-{
-  static const Color colours[8] = { Color::Black, Color::BrightRed, Color::BrightGreen, Color::BrightYellow,
-                                    Color::BrightBlue, Color::BrightMagenta, Color::BrightCyan, Color::BrightWhite };
-  // the pages, found by their form feeds
-  std::vector<char const *> pages;
-  pages.push_back(rom.manual);
-  for (char const * p = rom.manual; *p; ++p)
-    if (*p == '\f')
-      pages.push_back(p + 1);
-
-  fabgl::Canvas & cv = *s_canvas;
-  auto kb = PS2.keyboard();
-  int page = 0;
-
-  // the frame of the viewer, drawn once; turning a page then overwrites the text in place,
-  // every line padded to the full width, which does not flicker like clearing the screen
-  cv.setBrushColor(Color::Black);
-  cv.clear();
-  cv.setPenColor(Color::BrightCyan);
-  String title = rom.title;
-  if (title.length() > 24)
-    title = title.substring(0, 24);
-  cv.drawText(0, 4, title.c_str());
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 230, "L/R:page  Esc:back");
-
-  for (;;) {
-    char num[12];
-    snprintf(num, sizeof(num), "%7s", (String(page + 1) + "/" + String((int) pages.size())).c_str());
-    cv.setPenColor(Color::BrightYellow);
-    cv.drawText(256 - 7 * 8, 4, num);
-
-    // the page: runs of one colour at a time, then spaces to the end of the line
-    char const * p = pages[page];
-    bool pageDone = false;
-    Color colour = Color::BrightWhite;
-    char run[MANUAL_COLS + 1];
-    for (int row = 0; row < MANUAL_ROWS; ++row) {
-      int y = 20 + row * 8;
-      int col = 0, len = 0, runCol = 0;
-      if (!pageDone) {
-        for (; *p && *p != '\n' && *p != '\f'; ++p) {
-          if (*p == 0x1b && p[1]) {
-            if (len) {
-              run[len] = 0;
-              cv.setPenColor(colour);
-              cv.drawText(runCol * 8, y, run);
-              len = 0;
-            }
-            colour = colours[(p[1] - '0') & 7];
-            ++p;
-            continue;
-          }
-          if (col < MANUAL_COLS) {
-            if (!len)
-              runCol = col;
-            run[len++] = *p;
-            ++col;
-          }
-        }
-        if (len) {
-          run[len] = 0;
-          cv.setPenColor(colour);
-          cv.drawText(runCol * 8, y, run);
-        }
-        if (*p == '\n')
-          ++p;
-        else
-          pageDone = true;     // '\f' or the end: the rest of the rows are blank
-      }
-      if (col < MANUAL_COLS) {
-        memset(run, ' ', MANUAL_COLS - col);
-        run[MANUAL_COLS - col] = 0;
-        cv.drawText(col * 8, y, run);
-      }
-    }
-    cv.waitCompletion();
-
-    // keys
-    int step = 0;
-    while (!step) {
-      if (Serial.available()) {
-        int c = Serial.read();
-        if (c == 'x')
-          return;
-        step = c == 'n' ? 1 : c == 'p' ? -1 : 0;
-        continue;
-      }
-      if (!kb->virtualKeyAvailable()) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        continue;
-      }
-      bool down;
-      auto vk = kb->getNextVirtualKey(&down, 0);
-      if (!down)
-        continue;
-      switch (vk) {
-        case fabgl::VK_ESCAPE: case fabgl::VK_m: case fabgl::VK_M: case fabgl::VK_TAB:
-          return;
-        case fabgl::VK_RIGHT: case fabgl::VK_KP_RIGHT: case fabgl::VK_PAGEDOWN: case fabgl::VK_KP_PAGEDOWN:
-        case fabgl::VK_DOWN:  case fabgl::VK_KP_DOWN:  case fabgl::VK_SPACE:
-          step = 1;
-          break;
-        case fabgl::VK_LEFT:  case fabgl::VK_KP_LEFT:  case fabgl::VK_PAGEUP:   case fabgl::VK_KP_PAGEUP:
-        case fabgl::VK_UP:    case fabgl::VK_KP_UP:
-          step = -1;
-          break;
-        default:
-          break;
-      }
-    }
-    page = std::max(0, std::min((int) pages.size() - 1, page + step));
-  }
 }
 
 
@@ -2793,7 +2674,7 @@ static int s_paused = -1;
 
 // what a menu reads: the pad's buttons, from the keys mapped to them, real pads or the serial console
 enum MenuKey { MK_NONE, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_A, MK_B, MK_START, MK_SELECT,
-               MK_PAGEUP, MK_PAGEDOWN, MK_ROM, MK_1, MK_2, MK_3 };
+               MK_PAGEUP, MK_PAGEDOWN, MK_ESC, MK_ROM, MK_1, MK_2, MK_3 };
 static int s_serialRom;              // MK_ROM: the game's number sent over serial
 static uint8_t s_menuPads;           // the real pads' buttons as last seen, for new presses
 
@@ -2819,7 +2700,8 @@ static void sendScreenshot()
 }
 
 
-// Waits up to 100 ms for a button. Keys: arrows, Enter = A and Esc or SysRq = B besides the pad's keys.
+// Waits up to 100 ms for a button. Keys: arrows, Enter = A, Esc or SysRq = MK_ESC (B in most
+// menus, but where B has a job of its own it still goes back) besides the pad's keys.
 // Serial: u d l r a b e(select) s(tart) as in a game, a number picks that game, Z a screenshot.
 static MenuKey menuKey()
 {
@@ -2840,7 +2722,7 @@ static MenuKey menuKey()
         case VK_PAGEUP:   case VK_KP_PAGEUP:   return MK_PAGEUP;
         case VK_PAGEDOWN: case VK_KP_PAGEDOWN: return MK_PAGEDOWN;
         case VK_RETURN:   case VK_KP_ENTER:    return MK_A;
-        case VK_ESCAPE:   case VK_SYSREQ:      return MK_B;
+        case VK_ESCAPE:   case VK_SYSREQ:      return MK_ESC;
         default: break;
       }
       VirtualKey vk = canonKey(positionKey(item));
@@ -2910,7 +2792,7 @@ static bool confirm(char const * text)
     ui::flush();
     switch (menuKey()) {
       case MK_A:                return true;
-      case MK_B: case MK_START: return false;
+      case MK_B: case MK_START: case MK_ESC: return false;
       default:                  break;
     }
   }
@@ -3141,12 +3023,78 @@ static void aboutScreen()
   for (;;) {
     flush();
     MenuKey k = menuKey();
-    if (k == MK_A || k == MK_B || k == MK_START)
+    if (k == MK_A || k == MK_B || k == MK_START || k == MK_ESC)
       return;
     if (k == MK_ROM && s_serialRom >= 1 && s_serialRom <= 3)
       k = (MenuKey)(MK_1 + s_serialRom - 1);
     if (k >= MK_1 && k <= MK_3)
       sound((ui::Kind)(k - MK_1));
+  }
+}
+
+
+// The manual viewer: a teletext style page per screen (romindex.h). A or Right turns to the next
+// page, B or Left to the one before (Up/Down and Page Up/Down too), Start or Esc goes back.
+static void showManual(RomBlob const & rom)
+{
+  using namespace ui;
+  static const uint8_t colours[8] = { BLACK, RED, GREEN, YELLOW, LINE, MAGENTA, CYAN, BRIGHT };
+  // the pages, found by their form feeds
+  std::vector<char const *> pages;
+  pages.push_back(rom.manual);
+  for (char const * p = rom.manual; *p; ++p)
+    if (*p == '\f')
+      pages.push_back(p + 1);
+
+  int page = 0;
+  invalidate();
+  for (;;) {
+    clear();
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    char text[33];
+    snprintf(text, 25, "%s", rom.title);
+    put(1, 0, text, GREEN);
+    snprintf(text, sizeof(text), "%02d/%02d", page + 1, (int) pages.size());
+    put(COLS - 1 - strlen(text), 0, text, YELLOW);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+
+    // the page: ESC and a digit set the colour, a line ends at '\n', the page at '\f' or the end
+    char const * p = pages[page];
+    uint8_t colour = BRIGHT;
+    for (int row = 0; row < MANUAL_ROWS && *p && *p != '\f'; ++row) {
+      for (int col = 0; *p && *p != '\n' && *p != '\f'; ++p) {
+        if (*p == 0x1b && p[1]) {
+          colour = colours[(p[1] - '0') & 7];
+          ++p;
+        } else if (col < MANUAL_COLS) {
+          putc(col++, 2 + row, (uint8_t) *p, colour);
+        }
+      }
+      if (*p == '\n')
+        ++p;
+    }
+
+    divider(0, ROWS - 2, COLS);
+    putc(0, ROWS - 2, G_TL, LINE);
+    putc(COLS - 1, ROWS - 2, G_TR, LINE);
+    putc(0, ROWS - 1, G_V, LINE);
+    putc(COLS - 1, ROWS - 1, G_V, LINE);
+    hint(1, ROWS - 1, "B: < A: > +: <>    Start: Back");
+    flush();
+
+    int step = 0;
+    switch (menuKey()) {
+      case MK_A: case MK_RIGHT: case MK_DOWN: case MK_PAGEDOWN: step = 1; break;
+      case MK_B: case MK_LEFT:  case MK_UP:   case MK_PAGEUP:   step = -1; break;
+      case MK_START: case MK_ESC:
+        return;
+      default:
+        break;
+    }
+    page = std::max(0, std::min((int) pages.size() - 1, page + step));
   }
 }
 
@@ -3224,7 +3172,7 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
     switch (key) {
       case MK_UP:   move(-1); break;
       case MK_DOWN: move(1); break;
-      case MK_B: case MK_START:
+      case MK_B: case MK_START: case MK_ESC:
         return false;
       case MK_LEFT: case MK_RIGHT:
         if (o == Opt::SAVE)
@@ -3515,7 +3463,7 @@ static bool systemMenu()
     switch (key) {
       case MK_UP:   move(-1); continue;
       case MK_DOWN: move(1); continue;
-      case MK_B: case MK_START:
+      case MK_B: case MK_START: case MK_ESC:
         return false;
       default:
         break;

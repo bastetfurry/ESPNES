@@ -19,6 +19,7 @@ Tape::~Tape()
 uint8_t * Tape::loadBuffer(size_t capacity)
 {
   stop();
+  m_resume = false;
   free(m_data);
   m_data = (uint8_t *) malloc(capacity);
   m_size = 0;
@@ -53,6 +54,7 @@ char const * Tape::load(uint8_t const * image, size_t size)
 void Tape::record(int32_t cycle, int level, uint32_t clock, size_t capacity)
 {
   stop();
+  m_resume = false;
   free(m_data);
   m_data = (uint8_t *) malloc(capacity);
   m_capacity = m_data ? capacity : 0;
@@ -202,6 +204,13 @@ void Tape::play(int32_t cycle)
   stop();
   if (empty())
     return;
+  if (m_resume) {
+    // on from where it stopped, with the half period it was in from its start
+    m_resume = false;
+    m_next = cycle + (m_phase ? m_runB : m_runA);
+    m_mode = PLAYING;
+    return;
+  }
   m_pos = HEADER_SIZE;
   m_startLevel = m_inLevel = m_data[5];
   m_elapsed = 0;
@@ -252,6 +261,8 @@ void Tape::stop()
         m_capacity = m_size;
       }
   }
+  if (m_mode == PLAYING)
+    m_resume = true;
   m_mode = STOPPED;
 }
 

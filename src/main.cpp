@@ -14,12 +14,12 @@
 //
 // Keys: arrows = D-pad, Ctrl = A, Alt = B, Shift = Select, Space = Start; player 2 and the Famicom
 //       mic on the numpad (all changed in the main menu's options); real NES pads on GPIOs (see
-//       PAD_LATCH_GPIO). SysRq (Alt+PrintScreen) = the system menu (tape, cheats, volume, reset,
-//       back to the ROM list) in every game; F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
+//       PAD_LATCH_GPIO). SysRq (Alt+PrintScreen) or A+B+Select+Start = the system menu
+//       (savestates, tape, cheats, volume, reset, back to the main menu) in every game; F1 = reset, F2/F3 = volume down/up, F10 = cheats on/off,
 //       F5/F6/F7 = the Data Recorder's play/record/stop (see "Data Recorder"). Esc is the game's.
 //       Family BASIC: the keyboard is the Famicom's, Scroll Lock switches it to the pads and back.
 // The main menu (see "the main menu") works with the pad's buttons; Start opens its options
-// (manual, savestates, cheat codes, TV system, keys, files, about). "Back to the ROM list" pauses
+// (manual, savestates, cheat codes, TV system, keys, files, about). "Main Menu" in the system menu pauses
 // the game; A on the paused game carries on.
 // Serial console: a number starts that ROM from the list, 'q' leaves the game, Z sends a screenshot,
 // and a b e s u d l r tap A, B, sElect, Start and the directions (in the menus too); P R X play, record and stop the tape,
@@ -1725,14 +1725,15 @@ static void loadSave()
 }
 
 
-static void storeSave()
+// Returns 1 when written, 0 when there was nothing to write, -1 when writing failed.
+static int storeSave()
 {
   if (s_savePath.isEmpty())
-    return;
+    return 0;
   uint32_t h = hashSaveRam();
   if (h == s_saveHash) {
     Serial.println("Save RAM unchanged, not written");
-    return;
+    return 0;
   }
   // writing flash stops the cache, and with it the sound interrupt: pause the sound around it
   s_soundGen->play(false);
@@ -1744,9 +1745,10 @@ static void storeSave()
   if (written == Nes::PRG_RAM_SIZE) {
     s_saveHash = h;
     Serial.printf("Save RAM written to %s\n", s_savePath.c_str());
-  } else {
-    Serial.printf("Writing %s FAILED\n", s_savePath.c_str());
+    return 1;
   }
+  Serial.printf("Writing %s FAILED\n", s_savePath.c_str());
+  return -1;
 }
 
 
@@ -2524,155 +2526,7 @@ static void nsfFrame(uint8_t buttons)
 }
 
 
-///////////////////////////////////////////////////////////////////////////////
-// System menu: SysRq (Alt+PrintScreen) in every game, as in ESPPC. The game stands still while it
-// is open; the box is drawn over its picture, which the next frame paints again.
-
-enum class SysAction { RETURN, PLAY, RECORD, STOP, KEYBOARD, LAYOUT, CHEATS, VOLUME, RESET, ROMLIST };
-
-static constexpr int SYS_X = 24, SYS_W = 208, SYS_Y = 48;
-
-// one row of the menu, as selected or not
-static void drawSystemRow(SysAction a, int i, bool selected)
-{
-  char line[32];
-  switch (a) {
-    case SysAction::RETURN:   snprintf(line, sizeof(line), "Return to game"); break;
-    case SysAction::PLAY:     snprintf(line, sizeof(line), "Tape: play"); break;
-    case SysAction::RECORD:   snprintf(line, sizeof(line), "Tape: record"); break;
-    case SysAction::STOP:     snprintf(line, sizeof(line), "Tape: stop"); break;
-    case SysAction::KEYBOARD: snprintf(line, sizeof(line), "Keyboard     [%s]", s_famiMode ? "Famicom" : "pads"); break;
-    case SysAction::LAYOUT:   snprintf(line, sizeof(line), "Layout [%s]", currentLayout()->desc); break;
-    case SysAction::CHEATS:   snprintf(line, sizeof(line), "Cheats       [%s]", !nes.cheatCount() ? "none" : nes.cheatsEnabled() ? "on" : "off"); break;
-    case SysAction::VOLUME:   snprintf(line, sizeof(line), "Volume       [%d/8]", s_volume); break;
-    case SysAction::RESET:    snprintf(line, sizeof(line), "Reset"); break;
-    case SysAction::ROMLIST:  snprintf(line, sizeof(line), "Back to the ROM list"); break;
-  }
-  // padded to the row's width: the text's background paints the whole row, nothing is cleared first
-  char padded[32];
-  snprintf(padded, sizeof(padded), "%-24s", line);
-  fabgl::Canvas & cv = *s_canvas;
-  cv.setBrushColor(selected ? Color::BrightBlue : Color::Blue);
-  cv.setPenColor(selected ? Color::BrightWhite : Color::White);
-  cv.drawText(SYS_X + 8, SYS_Y + 34 + i * 8, padded);
-}
-
-
-static void drawSystemMenu(SysAction const * items, int count, int sel)
-{
-  int h = 8 * (count + 6);
-  fabgl::Canvas & cv = *s_canvas;
-  cv.setBrushColor(Color::Blue);
-  cv.fillRectangle(SYS_X, SYS_Y, SYS_X + SYS_W - 1, SYS_Y + h - 1);
-  cv.setPenColor(Color::BrightWhite);
-  cv.drawRectangle(SYS_X + 2, SYS_Y + 2, SYS_X + SYS_W - 3, SYS_Y + h - 3);
-  cv.setPenColor(Color::BrightYellow);
-  cv.drawText(SYS_X + (SYS_W - 18 * 8) / 2, SYS_Y + 6, "ESPNES System Menu");
-  // the tape, under the title
-  char line[32];
-  if (s_tape.empty())
-    snprintf(line, sizeof(line), "Tape: empty");
-  else
-    snprintf(line, sizeof(line), "Tape: %u B, %s", (unsigned) s_tape.size(),
-             s_tape.mode() == Tape::PLAYING ? "playing" : s_tape.mode() == Tape::RECORDING ? "recording" : "stopped");
-  cv.setPenColor(Color::BrightCyan);
-  cv.drawText(SYS_X + 12, SYS_Y + 20, line);
-  for (int i = 0; i < count; ++i)
-    drawSystemRow(items[i], i, i == sel);
-  cv.setBrushColor(Color::Blue);
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(SYS_X + 12, SYS_Y + h - 14, "\x18\x19 Enter  \x1b\x1a change  Esc");
-  cv.waitCompletion();
-}
-
-
-// Returns true to go back to the ROM list.
-static bool systemMenu()
-{
-  SysAction items[10];
-  int count = 0;
-  int layout = s_layout;
-  for (SysAction a : { SysAction::RETURN, SysAction::PLAY, SysAction::RECORD, SysAction::STOP, SysAction::KEYBOARD,
-                       SysAction::LAYOUT, SysAction::CHEATS, SysAction::VOLUME, SysAction::RESET, SysAction::ROMLIST })
-    if (a != SysAction::KEYBOARD || nes.famiKeyboard())
-      items[count++] = a;
-  int sel = 0;
-  releaseFamiKeys();
-  s_padState[0] = s_padState[1] = 0;
-  Serial.println("System menu: n/p select, o does it, < > change, ~ leaves");
-  // a changed layout is kept when the menu closes
-  struct KeepLayout {
-    int before;
-    ~KeepLayout() { if (s_layout != before) storeLayout(); }
-  } keep { layout };
-  auto kb = PS2.keyboard();
-  drawSystemMenu(items, count, sel);
-  for (int shown = sel;; shown = sel) {
-    // a key: from the keyboard, or n p o < > ~ over serial
-    int key = 0;
-    while (!key) {
-      if (kb->virtualKeyAvailable()) {
-        bool down;
-        auto vk = kb->getNextVirtualKey(&down, 0);
-        if (!down)
-          continue;
-        using namespace fabgl;
-        if (vk == VK_UP || vk == VK_KP_UP || vk == VK_KP_8)               key = 'p';
-        else if (vk == VK_DOWN || vk == VK_KP_DOWN || vk == VK_KP_2)      key = 'n';
-        else if (vk == VK_RETURN || vk == VK_KP_ENTER || vk == VK_SPACE)  key = 'o';
-        else if (vk == VK_LEFT || vk == VK_KP_LEFT || vk == VK_KP_4)      key = '<';
-        else if (vk == VK_RIGHT || vk == VK_KP_RIGHT || vk == VK_KP_6)    key = '>';
-        else if (vk == VK_ESCAPE || vk == VK_SYSREQ)                     key = '~';
-      } else if (Serial.available()) {
-        int c = Serial.read();
-        if (strchr("npo<>~", c))
-          key = c;
-      } else {
-        delay(10);
-      }
-    }
-    SysAction a = items[sel];
-    // after the key: the rows that changed, only them
-    struct Redraw {
-      SysAction const * items;
-      int const &       sel;
-      int               shown;
-      ~Redraw()
-      {
-        if (sel != shown)
-          drawSystemRow(items[shown], shown, false);
-        drawSystemRow(items[sel], sel, true);
-        s_canvas->waitCompletion();
-      }
-    } redraw { items, sel, shown };
-    if (key == 'p')
-      sel = (sel + count - 1) % count;
-    else if (key == 'n')
-      sel = (sel + 1) % count;
-    else if (key == '~')
-      return false;
-    else if ((key == '<' || key == '>') && a == SysAction::VOLUME) {
-      s_volume = std::max(0, std::min(8, s_volume + (key == '>' ? 1 : -1)));
-      Serial.printf("Volume %d/8\n", s_volume);
-    } else if ((key == '<' || key == '>' || key == 'o') && a == SysAction::LAYOUT) {
-      setLayout(s_layout + (key == '<' ? -1 : 1));
-      Serial.printf("Layout: %s\n", currentLayout()->desc);
-    } else if (key == 'o') {
-      switch (a) {
-        case SysAction::RETURN:   return false;
-        case SysAction::PLAY:     tapePlay(); return false;
-        case SysAction::RECORD:   tapeRecord(); return false;
-        case SysAction::STOP:     tapeStop(); return false;
-        case SysAction::KEYBOARD: setFamiMode(!s_famiMode); break;
-        case SysAction::CHEATS:   toggleCheats(); break;
-        case SysAction::VOLUME:   break;
-        case SysAction::LAYOUT:   break;
-        case SysAction::RESET:    resetConsole(); Serial.println("Reset"); return false;
-        case SysAction::ROMLIST:  return true;
-      }
-    }
-  }
-}
+static bool systemMenu();
 
 
 // Runs the loaded game until it goes back to the ROM list (the system menu, or 'q' over serial).
@@ -2710,6 +2564,7 @@ static void runGame()
 
   uint8_t serialButtons = 0;
   int serialFrames = 0;
+  bool padMuted = false;
 
   int64_t next = esp_timer_get_time();
   int skipped = 0;
@@ -2820,6 +2675,23 @@ static void runGame()
       }
     }
     uint8_t pad = updatePads(serialFrames ? serialButtons : 0);
+    // A+B+Select+Start on pad 1: the system menu; the buttons are then the game's again only once
+    // all are let go
+    if ((pad & 0x0f) == 0x0f && !padMuted) {
+      padMuted = true;
+      if (systemMenu())
+        return;
+      next = esp_timer_get_time();
+      kb->emptyVirtualKeyQueue();
+      if (music)
+        drawNsfScreen();
+    }
+    if (padMuted) {
+      if (pad)
+        nes.setButtons(0, pad = 0);
+      else
+        padMuted = false;
+    }
     famiKeysFrame();
     if (music)
       nsfFrame(pad);
@@ -2923,6 +2795,15 @@ static int s_paused = -1;
 enum MenuKey { MK_NONE, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT, MK_A, MK_B, MK_START, MK_SELECT,
                MK_PAGEUP, MK_PAGEDOWN, MK_ROM, MK_1, MK_2, MK_3 };
 static int s_serialRom;              // MK_ROM: the game's number sent over serial
+static uint8_t s_menuPads;           // the real pads' buttons as last seen, for new presses
+
+// A menu opens: buttons held now (the pad's menu combination) are not presses for it.
+static void menuKeyStart()
+{
+  uint8_t hw[2];
+  readHardwarePads(hw);
+  s_menuPads = filterPad(hw[0] | hw[1]);
+}
 
 // The framebuffer to the serial console, a line of 256 characters '0' + raw pixel & 63 each
 // (tools/screenshot.py makes a PNG of it).
@@ -2938,12 +2819,11 @@ static void sendScreenshot()
 }
 
 
-// Waits up to 100 ms for a button. Keys: arrows, Enter = A and Esc = B besides the pad's keys.
+// Waits up to 100 ms for a button. Keys: arrows, Enter = A and Esc or SysRq = B besides the pad's keys.
 // Serial: u d l r a b e(select) s(tart) as in a game, a number picks that game, Z a screenshot.
 static MenuKey menuKey()
 {
   static const MenuKey buttons[8] = { MK_A, MK_B, MK_SELECT, MK_START, MK_UP, MK_DOWN, MK_LEFT, MK_RIGHT };
-  static uint8_t  padsBefore;
   static uint32_t repeatAt;
   auto kb = PS2.keyboard();
   for (uint32_t start = millis(); millis() - start < 100; ) {
@@ -2960,7 +2840,7 @@ static MenuKey menuKey()
         case VK_PAGEUP:   case VK_KP_PAGEUP:   return MK_PAGEUP;
         case VK_PAGEDOWN: case VK_KP_PAGEDOWN: return MK_PAGEDOWN;
         case VK_RETURN:   case VK_KP_ENTER:    return MK_A;
-        case VK_ESCAPE:                        return MK_B;
+        case VK_ESCAPE:   case VK_SYSREQ:      return MK_B;
         default: break;
       }
       VirtualKey vk = canonKey(positionKey(item));
@@ -2989,8 +2869,8 @@ static MenuKey menuKey()
     // real pads: a new press, or a held direction repeating
     uint8_t hw[2];
     readHardwarePads(hw);
-    uint8_t pads = filterPad(hw[0] | hw[1]), pressed = pads & ~padsBefore;
-    padsBefore = pads;
+    uint8_t pads = filterPad(hw[0] | hw[1]), pressed = pads & ~s_menuPads;
+    s_menuPads = pads;
     if (pressed)
       repeatAt = millis() + 400;
     else if ((pads & 0xf0) && (int32_t)(millis() - repeatAt) >= 0) {
@@ -3476,6 +3356,255 @@ static int chooseRom(int * slot)
         if (s_paused >= 0 && selected != s_paused && !confirm("Quit the\nrunning game?"))
           break;
         return selected;
+      default:
+        break;
+    }
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// System menu (see MenuMockup.txt): SysRq (Alt+PrintScreen) in every game, as in ESPPC, or A+B+
+// Start+Select on pad 1. The game stands still while it is open; the box is drawn over its
+// picture, the rest of the grid is left alone (ui::picture), and the next frame paints it all again.
+
+enum class SysAction { MANUAL, SAVE, LOAD, CHEATS, MEMORY, SRAM, TAPE, INPUT, KEYMAP, VOLUME, RESET, MAINMENU };
+
+// Returns true to go back to the main menu.
+static bool systemMenu()
+{
+  RomBlob const & rom = *s_trapRom;
+  int idx = s_trapRom - g_roms;
+  bool music = nes.isNsf();
+  bool tape = rom.tapeTrap || nes.famiKeyboard() || !s_tape.empty() || s_tape.mode() != Tape::STOPPED;
+  SysAction items[12];
+  int count = 0;
+  for (SysAction a : { SysAction::MANUAL, SysAction::SAVE, SysAction::LOAD, SysAction::CHEATS, SysAction::MEMORY,
+                       SysAction::SRAM, SysAction::TAPE, SysAction::INPUT, SysAction::KEYMAP, SysAction::VOLUME,
+                       SysAction::RESET, SysAction::MAINMENU }) {
+    if (a == SysAction::SRAM && s_savePath.isEmpty())
+      continue;
+    if (a == SysAction::TAPE && !tape)
+      continue;
+    if ((a == SysAction::INPUT || a == SysAction::KEYMAP) && !nes.famiKeyboard())
+      continue;
+    items[count++] = a;
+  }
+  bool slots[2] = { !music && slotUsed(rom, 1), !music && slotUsed(rom, 2) };
+  auto enabled = [&](SysAction a) {
+    switch (a) {
+      case SysAction::MANUAL: return rom.manual != nullptr;
+      case SysAction::SAVE:   return !music;
+      case SysAction::LOAD:   return slots[0] || slots[1];
+      case SysAction::CHEATS: return !music;
+      case SysAction::MEMORY: return false;              // to come
+      default:                return true;
+    }
+  };
+  int sel = 0, saveChoice = 1, loadChoice = 1, tapeChoice = 0;
+  auto move = [&](int step) {
+    do
+      sel = (sel + count + step) % count;
+    while (!enabled(items[sel]));
+  };
+  if (!enabled(items[sel]))
+    move(1);
+
+  releaseFamiKeys();
+  s_padState[0] = s_padState[1] = 0;
+  menuKeyStart();
+  Serial.println("System menu: u/d select, a does it, l/r change, b leaves");
+  // a changed layout is kept when the menu closes
+  struct KeepLayout {
+    int before;
+    ~KeepLayout() { if (s_layout != before) storeLayout(); }
+  } keep { s_layout };
+
+  // The game's picture stays around the box. A message covers the top row for a while: that row
+  // is kept, to be put back.
+  static constexpr int W = 21, COL = (ui::COLS - W) / 2;
+  int h = (tape ? 3 : 1) + count + 4, row = (ui::ROWS - h) / 2;
+  std::vector<uint8_t> topRow(8 * 256);
+  for (int y = 0; y < 8; ++y)
+    for (int x = 0; x < 256; ++x)
+      topRow[y * 256 + x] = s_lines[y][x ^ 2];
+  bool background = true;             // the game's picture is still around the box
+  ui::picture(0, 0, ui::COLS, ui::ROWS);
+  ui::flush();                        // what is shown: the picture everywhere
+  ui::messageArea(0, ui::COLS);
+
+  for (;;) {
+    using namespace ui;
+    if (background)
+      picture(0, 0, COLS, ROWS);
+    else
+      clear();
+    box(COL, row, W, h);
+    int r = row + 1;
+    char text[24];
+    if (tape) {
+      // where the tape is
+      snprintf(text, sizeof(text), "Tape: %u/%u", (unsigned) s_tape.position(), (unsigned) s_tape.length());
+      put(COL + 2, r, text, s_tape.mode() == Tape::PLAYING ? GREEN : s_tape.mode() == Tape::RECORDING ? RED : TEXT);
+      divider(COL, r + 1, W);
+      r += 2;
+    }
+    for (int i = 0; i < count; ++i, ++r) {
+      SysAction a = items[i];
+      bool on = i == sel, ok = enabled(a);
+      uint8_t bg = on ? SEL_BG : BLACK, fg = on ? SEL_TEXT : ok ? TEXT : GREY;
+      static char const * const names[] = { "Manual", "Save State", "Load State", "Cheats", "Edit Memory",
+                                            "Force SRAM Save", "Tape", "Input:", "Keymap", "Volume",
+                                            "Reset Console", "Main Menu" };
+      fill(COL + 1, r, W - 2, 1, ' ', fg, bg);
+      put(COL + 2, r, names[(int) a], fg, bg);
+      // what is chosen on the row: inverted while it is selected
+      auto choice = [&](int col, char const * t, uint8_t c, bool chosen) {
+        bool inv = on && chosen;
+        put(COL + col, r, t, !inv ? c : c == TEXT || c == GREEN ? (uint8_t) BLACK : (uint8_t) BRIGHT, inv ? c : bg);
+      };
+      switch (a) {
+        case SysAction::SAVE: case SysAction::LOAD:
+          for (int s = 1; s <= 2; ++s)
+            choice(14 + 2 * s, s == 1 ? "1" : "2", slots[s - 1] ? GREEN : GREY,
+                   s == (a == SysAction::SAVE ? saveChoice : loadChoice));
+          break;
+        case SysAction::TAPE: {
+          static char const * const buttons[] = { "\x10", "\x07", "\xdb", "\xae" };
+          Tape::Mode m = s_tape.mode();
+          uint8_t colours[] = { m == Tape::PLAYING ? GREEN : TEXT, m == Tape::RECORDING ? RED : TEXT, TEXT, TEXT };
+          for (int b = 0; b < 4; ++b)
+            choice(12 + 2 * b, buttons[b], colours[b], b == tapeChoice);
+          break;
+        }
+        case SysAction::INPUT:
+          put(COL + 12, r, "Key", s_famiMode ? GREEN : GREY, bg);
+          put(COL + 16, r, "Joy", s_famiMode ? GREY : GREEN, bg);
+          break;
+        case SysAction::KEYMAP: case SysAction::VOLUME:
+          if (a == SysAction::KEYMAP)
+            snprintf(text, sizeof(text), "[%s]", currentLayout()->name);
+          else
+            snprintf(text, sizeof(text), "[%d/8]", s_volume);
+          put(COL + W - 2 - strlen(text), r, text, fg, bg);
+          break;
+        default:
+          break;
+      }
+    }
+    divider(COL, r, W);
+    hint(COL + 2, r + 1, "<>^v: Crsr");
+    hint(COL + 2, r + 2, "A: OK     B: Back");
+    if (flush() && background) {
+      // the message is gone: the top row of the game's picture back
+      for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 256; ++x)
+          if (pictureShown(x, y))
+            s_lines[y][x ^ 2] = topRow[y * 256 + x];
+    }
+
+    MenuKey key = menuKey();
+    SysAction a = items[sel];
+    bool change = key == MK_LEFT || key == MK_RIGHT;
+    int step = key == MK_LEFT ? -1 : 1;
+    // after a screen of its own the menu stands on black
+    auto screen = [&]() {
+      ui::invalidate();
+      background = false;
+    };
+    switch (key) {
+      case MK_UP:   move(-1); continue;
+      case MK_DOWN: move(1); continue;
+      case MK_B: case MK_START:
+        return false;
+      default:
+        break;
+    }
+    if (change) {
+      switch (a) {
+        case SysAction::SAVE:   saveChoice = 3 - saveChoice; break;
+        case SysAction::LOAD:   loadChoice = 3 - loadChoice; break;
+        case SysAction::TAPE:   tapeChoice = (tapeChoice + 4 + step) % 4; break;
+        case SysAction::INPUT:  setFamiMode(!s_famiMode); break;
+        case SysAction::KEYMAP: setLayout(s_layout + step); break;
+        case SysAction::VOLUME:
+          s_volume = std::max(0, std::min(8, s_volume + step));
+          ui::sound(ui::NEUTRAL);         // to hear how loud
+          break;
+        default:
+          break;
+      }
+      continue;
+    }
+    if (key != MK_A)
+      continue;
+    switch (a) {
+      case SysAction::MANUAL:
+        showManual(rom);
+        screen();
+        break;
+      case SysAction::SAVE: {
+        char question[24];
+        snprintf(question, sizeof(question), "Overwrite slot %d?", saveChoice);
+        if (slots[saveChoice - 1] && !confirm(question))
+          break;
+        if (char const * err = saveSlot(idx, saveChoice)) {
+          ui::message(ui::BAD, err);
+          break;
+        }
+        slots[saveChoice - 1] = true;
+        snprintf(question, sizeof(question), "Saved in slot %d", saveChoice);
+        ui::message(ui::GOOD, question);
+        break;
+      }
+      case SysAction::LOAD: {
+        if (!slots[loadChoice - 1]) {
+          ui::message(ui::BAD, loadChoice == 1 ? "Slot 1 is empty" : "Slot 2 is empty");
+          break;
+        }
+        if (!confirm("Load over the\nrunning game?"))
+          break;
+        if (char const * err = loadSlot(rom, loadChoice)) {
+          ui::message(ui::BAD, err);
+          break;
+        }
+        showOverlay(loadChoice == 1 ? "SLOT 1 LOADED" : "SLOT 2 LOADED");
+        return false;
+      }
+      case SysAction::CHEATS:
+        editCheats(rom);
+        applyCheats(rom);
+        screen();
+        break;
+      case SysAction::SRAM: {
+        int done = storeSave();
+        ui::message(done > 0 ? ui::GOOD : done == 0 ? ui::NEUTRAL : ui::BAD,
+                    done > 0 ? "SRAM saved" : done == 0 ? "SRAM unchanged" : "Saving the SRAM failed");
+        break;
+      }
+      case SysAction::TAPE:
+        // play and record go back to the game, stop and rewind stay
+        switch (tapeChoice) {
+          case 0: tapePlay(); return false;
+          case 1: tapeRecord(); return false;
+          case 2: tapeStop(); break;
+          case 3: s_tape.rewind(); showTapeState("REWOUND"); break;
+        }
+        break;
+      case SysAction::INPUT:
+        setFamiMode(!s_famiMode);
+        break;
+      case SysAction::KEYMAP:
+        setLayout(s_layout + 1);
+        break;
+      case SysAction::RESET:
+        if (!confirm("Reset the\nconsole?"))
+          break;
+        resetConsole();
+        Serial.println("Reset");
+        return false;
+      case SysAction::MAINMENU:
+        return true;
       default:
         break;
     }

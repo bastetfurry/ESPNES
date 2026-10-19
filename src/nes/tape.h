@@ -51,6 +51,12 @@ public:
 
   // played time in seconds and the tape's length (for the display)
   uint32_t playedSeconds() const             { return m_clock ? (uint32_t)(m_elapsed / m_clock) : 0; }
+  // where the tape is, in bytes of the image, and how far it goes: recording, the bytes recorded
+  // of the room there is; else the place in the image (0: at the start) of its size
+  size_t   position() const                  { return m_mode == RECORDING ? m_size : m_mode == PLAYING || m_resume ? m_pos : 0; }
+  size_t   length() const                    { return m_mode == RECORDING ? m_capacity : m_size; }
+  // back to the start: the next play() starts there (it goes on from where stop() was otherwise)
+  void     rewind()                          { stop(); m_resume = false; m_elapsed = 0; }
 
   // --- for the console (Nes) ---
   // 'cycle' is the console's frame relative CPU cycle; rebase() moves the stored ones at the end
@@ -102,6 +108,7 @@ private:
   void      useRecent(int i, uint32_t a, uint32_t b);
 
   // playing
+  bool      m_resume = false;       // stopped while playing: play() goes on from m_pos
   size_t    m_pos = 0;
   int       m_inLevel = 0;
   int       m_startLevel = 0;

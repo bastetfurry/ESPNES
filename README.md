@@ -80,10 +80,15 @@ like someone talking into it (Famicom games use it, e.g. the Japanese Zelda's Po
 
 ### System menu
 
-Alt+PrtScr (SysRq) opens the system menu over the paused game, the same key as in ESPPC. It has
-the tape (play, record, stop, and what is on it), the keyboard (Famicom or pads, for keyboard
-games), the keyboard layout, cheats on/off, the volume, reset and back to the ROM list.
-Left/Right changes the layout and the volume. Esc or SysRq returns to the game.
+Alt+PrtScr (SysRq) opens the system menu over the paused game, the same key as in ESPPC; on a
+pad, A+B+Select+Start on pad 1 (the game gets the buttons again once all are let go). It has the
+manual, savestates (Left/Right picks the slot), the cheat codes, Force SRAM Save (games with a
+battery: writes the save now, if it changed), the volume, reset (asks first) and the way back to
+the main menu. Games that use the tape (Family BASIC, the games with a tape trap, or whenever a
+tape is in) also get the tape: where it is over how long it is at the top, and play, record, stop
+and rewind (Left/Right picks the button; play goes on from where it was stopped). Keyboard games
+also get the keyboard (Key: the Famicom's, Joy: the pads) and its layout. B, Esc or SysRq returns
+to the game.
 
 ### Keyboard layout
 
@@ -162,7 +167,7 @@ connected). Real pads and keys work at the same time.
 
 ## Savestates
 
-"Back to the ROM list" in the system menu (SysRq) pauses the game and shows the main menu, with the paused game in green
+"Main Menu" in the system menu (SysRq) pauses the game and shows the main menu, with the paused game in green
 and a play arrow. A on it carries on where it was; starting or loading another game asks first, then ends it. Nothing is copied for that: the
 console just waits.
 
@@ -193,7 +198,7 @@ SysRq (Alt+PrtScr) opens the system menu, in every game (see below). Esc belongs
 (Auto uses the NES 2.0 header, then names like "(E)" or "(Europe)", otherwise NTSC).
 
 Over the serial console (115200 baud) the ROM list is printed at boot; sending a number starts
-that ROM, `a b e s u d l r` are the pad's buttons in the menus as in games (A, B, Select, Start and the directions), `Z` sends a screenshot (`tools/screenshot.py --keys ... out.png` makes a PNG of it, in menus and games). In the screens opened from the options: the manual turns pages with `n`/`p` and leaves with `x`; the file manager takes `n`/`p` to select, `d` to delete, `o` for the files of removed games, `y` to confirm, `~` to leave; the key mapper `1`/`2` for the player, then a letter, digit or space for the next button, `^` for the player's defaults, `~` to cancel. `q` leaves the game, `y` opens the system menu (`n`/`p` select, `o` does it, `<`/`>` volume, `~` closes), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
+that ROM, `a b e s u d l r` are the pad's buttons in the menus as in games (A, B, Select, Start and the directions), `Z` sends a screenshot (`tools/screenshot.py --keys ... out.png` makes a PNG of it, in menus and games). In the screens opened from the options: the manual turns pages with `n`/`p` and leaves with `x`; the file manager takes `n`/`p` to select, `d` to delete, `o` for the files of removed games, `y` to confirm, `~` to leave; the key mapper `1`/`2` for the player, then a letter, digit or space for the next button, `^` for the player's defaults, `~` to cancel. `q` leaves the game, `y` opens the system menu (it takes the pad's letters as the other menus), `T` and a line types it on the Famicom keyboard (`|` is RETURN); `a b e s u d l r` tap A, B, Select, Start and the directions; `P`, `R`, `X` play, record and stop the tape, `U` puts one in (see Data Recorder); while a tape trap asks, `1`-`4`, `p` and `~` answer it. Frame timings are printed every 5 seconds.
 
 ## ROMs
 

@@ -730,7 +730,7 @@ static void storePadKeys()
 static String keyName(fabgl::VirtualKey vk)
 {
   using namespace fabgl;
-  vk = layoutKey(vk);
+  vk = canonKey(layoutKey(vk));        // the keypad's arrows as its digits
   switch (vk) {
     case VK_NONE:      return "-";
     case VK_UP:        return "\x18";
@@ -880,17 +880,32 @@ static char const * editPadKeys()
   auto kb = PS2.keyboard();
   kb->emptyVirtualKeyQueue();
 
-  auto drawMsg = [&](char const * message) {
-    char line[33];
-    snprintf(line, sizeof(line), "%-32s", message ? message : "");
-    cv.setPenColor(Color::BrightRed);
-    cv.drawText(0, 212, line);
+  // the frame in the menus' look, through the text grid, over the drawn pad and list (left alone)
+  int player = -1;
+  auto frame = [&](char const * hint1, char const * hint2) {
+    using namespace ui;
+    picture(0, 0, COLS, ROWS);
+    fill(0, 0, COLS, 1);
+    putc(0, 0, G_V, LINE);
+    putc(COLS - 1, 0, G_V, LINE);
+    put(1, 0, "Config Joypad", GREEN);
+    if (player >= 0)
+      put(COLS - 9, 0, player ? "Player 2" : "Player 1", YELLOW);
+    divider(0, 1, COLS);
+    putc(0, 1, G_BL, LINE);
+    putc(COLS - 1, 1, G_BR, LINE);
+    box(0, ROWS - 3, COLS, 4);        // its bottom line is off the screen
+    hint(1, ROWS - 2, hint1);
+    hint(1, ROWS - 1, hint2);
+    flush();
   };
   // one key, from the keyboard or the serial console; VK_NONE when there is none yet
   auto nextKey = [&]() {
     fabgl::VirtualKey vk = fabgl::VK_NONE;
     if (Serial.available()) {
       int c = tolower(Serial.read());
+      if (c == 0x1a)
+        sendScreenshot();
       if (c == '~')
         vk = fabgl::VK_ESCAPE;
       else if (c == '^')
@@ -906,23 +921,22 @@ static char const * editPadKeys()
       fabgl::VirtualKeyItem item;
       vk = kb->getNextVirtualKey(&item, 0) && item.down ? positionKey(item) : fabgl::VK_NONE;
     }
-    if (vk == fabgl::VK_NONE)
+    if (vk == fabgl::VK_NONE) {
+      ui::flush();                    // a message that ran out
       vTaskDelay(pdMS_TO_TICKS(20));
+    }
     return vk;
   };
 
   cv.setBrushColor(Color::Black);
   cv.clear();
-  cv.setPenColor(Color::BrightYellow);
-  cv.drawText(0, 4, "KEYS");
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 231, "Esc:cancel");
   drawPad(0);
+  cv.waitCompletion();
+  ui::invalidate();
+  ui::messageArea(0, ui::COLS);
 
   // the player
-  drawMsg("Which player? 1 or 2");
-  cv.waitCompletion();
-  int player = -1;
+  frame("1: Player 1   2: Player 2", "Esc: Back");
   while (player < 0) {
     auto vk = nextKey();
     if (vk == fabgl::VK_ESCAPE)
@@ -934,11 +948,10 @@ static char const * editPadKeys()
   }
   int steps = player ? PAD_KEYS : 8;
   fabgl::VirtualKey * mine = keys[player];
-  drawMsg(nullptr);
   if (player)
     drawPad(1);
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 222, "Press a key for each button");
+  cv.waitCompletion();
+  frame("Press a key for each button", "Esc: Cancel");
 
   // the list, every line padded to the full width so nothing needs clearing
   auto drawLine = [&](int step, int current, bool cursorOn) {
@@ -947,6 +960,7 @@ static char const * editPadKeys()
     String key = step == current ? (cursorOn ? "_" : " ") : keyName(mine[b]);
     snprintf(line, sizeof(line), "%c %-7s %-22s", step == current ? '>' : ' ', names[b], key.c_str());
     cv.setPenColor(step == current ? Color::BrightYellow : Color::White);
+    cv.setBrushColor(Color::Black);
     cv.drawText(0, LIST_TOP + step * 8, line);
   };
 
@@ -978,10 +992,9 @@ static char const * editPadKeys()
     }
     vk = canonKey(vk);
     if (reservedKey(vk)) {
-      drawMsg("Esc F1 F2 F3 F10 are taken");
+      ui::message(ui::BAD, "Esc and the F keys are taken");
       continue;
     }
-    drawMsg(nullptr);
 
     // a key another button has: that button gets this one's old key
     int b = order[step];
@@ -2004,9 +2017,14 @@ static void drawNsfScreen()
            n.chips & NSF_MMC5 ? " + MMC5" : "", n.chips & NSF_5B ? " + 5B" : "",
            n.chips & NSF_N163 ? " + N163" : "", nes.region() == Region::PAL ? "PAL" : "NTSC");
   centred(184, chips, Color::White);
-  cv.setPenColor(Color::BrightBlack);
-  cv.drawText(0, 224, "\x1b\x1a:song  Start:pause  SysRq:menu");
   cv.waitCompletion();
+  // the hints in the menus' look; the rest of the grid is left to the canvas
+  ui::invalidate();
+  ui::picture(0, 0, ui::COLS, ui::ROWS);
+  ui::box(0, ui::ROWS - 3, ui::COLS, 4);
+  ui::hint(1, ui::ROWS - 2, "<>: Song  Start: Pause");
+  ui::hint(1, ui::ROWS - 1, "SysRq/A+B+Sel+St: Menu");
+  ui::flush();
   // the bars' names
   cv.setPenColor(Color::BrightBlack);
   nsfMeterChannels();
@@ -2146,6 +2164,9 @@ static void runGame()
       if (vk == fabgl::VK_F2 || vk == fabgl::VK_F3) {
         s_volume = std::max(0, std::min(8, s_volume + (vk == fabgl::VK_F3 ? 1 : -1)));
         Serial.printf("Volume %d/8\n", s_volume);
+        char text[16];
+        snprintf(text, sizeof(text), "VOLUME %d/8", s_volume);
+        showOverlay(text);
       }
     }
     // serial console, for testing without a keyboard: 'q' leaves, a b e(select) s(tart) u d l r
@@ -3698,8 +3719,11 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
           saveChoice = 3 - saveChoice;
         else if (o == Opt::LOAD)
           loadChoice = 3 - loadChoice;
-        else if (o == Opt::TV)
+        else if (o == Opt::TV) {
           s_regionChoice = (RegionChoice)(((int) s_regionChoice + (key == MK_LEFT ? 2 : 1)) % 3);
+          if (s_paused >= 0)
+            ui::message(ui::NEUTRAL, "For the next game started");
+        }
         break;
       case MK_A:
         switch (o) {
@@ -3739,6 +3763,8 @@ static bool optionsMenu(int selected, int top, GameFacts & facts, int * slot)
             break;
           case Opt::TV:
             s_regionChoice = (RegionChoice)(((int) s_regionChoice + 1) % 3);
+            if (s_paused >= 0)
+              ui::message(ui::NEUTRAL, "For the next game started");
             break;
           case Opt::MEMORY:
             memoryEditor();

@@ -521,15 +521,19 @@ Super Mario Bros. runs at full speed with no frame skipping, using ~8.8 ms of th
 
 ### Accuracy
 
-<img src="screenshots/accuracycoin.png" width="256" alt="AccuracyCoin results on the board" align="right">
+<img src="screenshots/accuracycoin.png" width="256" alt="AccuracyCoin results on the board, 104 of 146 (2026-10-14)"> <img src="screenshots/accuracycoin2.png" width="256" alt="AccuracyCoin results on the board, 117 of 146 (2026-10-20)">
 
-On AccuracyCoin, ESPNES passes 103 or 104 of 146 (2026-10-14), nothing skipped: which one depends
-on the frame Start is pressed in, since that sets the phase of the free running DMC against the
-tests, and the DMC DMA's cycle stealing is only approximated (pages 12-16 change, e.g. "DMA + open
-bus" and "DMA + $2007 read"). The PC harness and the board give the same results for the same
-frame. The CPU and opcode pages pass; the failures are the dot exact PPU, DMA and APU timing a
-scanline renderer does not model. For comparison, [doclic's leaderboard](https://doclic.eu/neslead.htm)
-lists Nintendo's NSO emulator at 97 of 140 on an older version of the suite.
+On AccuracyCoin, ESPNES passes 117 of 146 (2026-10-20, right; left the 104 of 2026-10-14),
+nothing skipped, whenever Start is pressed: the DMC's DMA now lands on the CPU cycle it is due
+(compared against Mesen's cycle counts), so the DMA tests no longer depend on the DMC's phase. The
+PC harness and the board give the same results. The CPU and opcode pages pass; most failures left
+are the dot exact PPU and APU timing a scanline renderer does not model. A dot based PPU was built
+to see whether that is out of reach after all: it passes a few more tests, but needs 17-25 ms a
+frame on its own, more than a whole NTSC frame on either core, so the scanline PPU stays and has
+taken over what the experiment showed (secondary OAM kept between lines, sprites fetched at their
+dot, the sprite 0 hit decided at its dot). For comparison,
+[doclic's leaderboard](https://doclic.eu/neslead.htm) lists Nintendo's NSO emulator at 97 of 140
+on an older version of the suite.
 
 ### Cores
 

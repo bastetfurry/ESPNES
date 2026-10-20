@@ -1,5 +1,6 @@
 #include <string.h>
 #include <limits.h>
+#include <algorithm>
 
 #include "ppu.h"
 #include "nes.h"
@@ -44,6 +45,13 @@ void Ppu::reset()
   m_readBuffer = 0;
   m_openBus = 0;
   m_evalStart = 0;
+  memset(m_oam2, 0xff, sizeof(m_oam2));
+  m_oam2Count = 0;
+  m_oam2Spr0 = false;
+  m_evalOn = false;
+  memset(m_spr, 0, sizeof(m_spr));
+  m_sprCount = 0;
+  m_sprSpr0 = false;
   m_openBusFrame = 0;
   spr0HitCycle = INT32_MAX;
   vblRaceCycle = INT32_MIN;
@@ -122,8 +130,7 @@ NES_HOT uint8_t Ppu::readRegister(uint16_t addr)
     m_openBus = 0;
   switch (addr & 7) {
     case 2: {
-      if (spr0HitCycle <= m_nes->cpu.cycles)
-        m_status |= 0x40;
+      resolveHit();
       if (NES_UNLIKELY(m_nes->cpu.cycles == vblRaceCycle))
         m_vblSuppressed = true;
       else if (NES_UNLIKELY(m_nes->cpu.cycles == m_vblCycle + 1) &&
@@ -140,6 +147,10 @@ NES_HOT uint8_t Ppu::readRegister(uint16_t addr)
       int dot, line = m_nes->currentLine(&dot);
       if (renderingEnabled() && line < 240 && ((dot >= 1 && dot <= 64) || (dot >= 257 && dot <= 320)))
         m_openBus = 0xff;
+      else if (renderingEnabled() && line < 240 && dot >= 65 && dot <= 256)
+        // sprite evaluation reads OAM as it goes: an object every 2 dots (in range ones take
+        // longer, which this leaves out), until the address passes 255
+        m_openBus = oam[std::min(m_evalStart + ((dot - 65) >> 1) * 4, 255)];
       else
         m_openBus = oam[m_oamAddr];
       m_openBusFrame = m_nes->frameCount;
@@ -187,13 +198,16 @@ NES_HOT void Ppu::writeRegister(uint16_t addr, uint8_t value)
       break;
     }
     case 1:
+      resolveHit();
       m_mask = value;
       break;
     case 3:
       m_oamAddr = value;
       break;
     case 4:
-      if (renderingEnabled() && m_nes->currentLine(nullptr) < 240) {
+      // (the pre-render line too: it fetches sprites like the others)
+      if (renderingEnabled() && (m_nes->currentLine(nullptr) < 240 ||
+                                 m_nes->currentLine(nullptr) == m_nes->linesPerFrame() - 1)) {
         m_oamAddr = (m_oamAddr + 4) & 0xfc;
       } else {
         // the attribute byte has no bits 2-4
@@ -297,14 +311,17 @@ void Ppu::copyVertical()
 }
 
 
-// PPU address of the pattern row 'row' (0 = top, before flipping) of a sprite
+// PPU address of the pattern row 'row' (0 = top, before flipping, wrapping at the sprite's
+// height) of a sprite
 static inline uint16_t spritePatternAddr(uint8_t ctrl, uint8_t tile, uint8_t attr, int row)
 {
   if (!(ctrl & 0x20)) {
+    row &= 7;
     if (attr & 0x80)
       row = 7 - row;
     return ((ctrl & 0x08) << 9) | (tile << 4) | row;
   }
+  row &= 15;
   if (attr & 0x80)
     row = 15 - row;
   return ((tile & 1) << 12) | ((tile & 0xfe) << 4) | ((row & 8) << 1) | (row & 7);
@@ -322,7 +339,7 @@ static inline uint16_t spritePatternAddr(uint8_t ctrl, uint8_t tile, uint8_t att
 //   - evaluation ends when the address passes 255
 // *spr0 tells whether the first object evaluated is among them: that one is "sprite 0" for the
 // hit, whichever OAM slot it is in. Returns the number of objects found.
-static int evaluateSprites(uint8_t const * oam, int start, int y, int height,
+static int findSprites(uint8_t const * oam, int start, int y, int height,
                            uint8_t found[8][4], bool * spr0, bool * overflow)
 {
   int count = 0;
@@ -355,6 +372,11 @@ static int evaluateSprites(uint8_t const * oam, int start, int y, int height,
 void Ppu::latchEvalStart()
 {
   m_evalStart = m_oamAddr;
+  // dots 1-64 cleared secondary OAM, on the pre-render line too (so a sprite found for line 240
+  // does not show on line 0, unless rendering only came on after this)
+  m_evalOn = m_mask & 0x18;
+  if (m_evalOn)
+    m_oam2Count = 0;
 }
 
 
@@ -364,7 +386,8 @@ void Ppu::captureLine(LineState & s) const
   s.x    = m_x;
   s.ctrl = m_ctrl;
   s.mask = m_mask;
-  s.evalStart = m_evalStart;
+  s.sprCount = m_sprCount;
+  memcpy(s.spr, m_spr, sizeof(m_spr));
   memcpy(s.palette, palette, sizeof(palette));
   memcpy(s.chrMap, chrMap, sizeof(chrMap));
   memcpy(s.sprChrMap, sprChrMap, sizeof(sprChrMap));
@@ -391,33 +414,70 @@ inline bool Ppu::bgOpaqueAt(int x) const
 }
 
 
-NES_HOT int Ppu::evaluateLine(int y)
+void Ppu::evaluateSprites(int y)
 {
-  // evaluation runs whenever rendering is on, background or sprites
-  if (!(m_mask & 0x18))
-    return -1;
-
-  int height = (m_ctrl & 0x20) ? 16 : 8;
-  uint8_t found[8][4];
-  bool spr0, overflow;
-  evaluateSprites(oam, m_evalStart, y, height, found, &spr0, &overflow);
+  // evaluation runs whenever rendering is on, background or sprites, from dot 65: turned on
+  // later, it leaves secondary OAM as it was
+  if (!m_evalOn || !(m_mask & 0x18))
+    return;
+  bool overflow;
+  m_oam2Count = findSprites(oam, m_evalStart, y + 1, (m_ctrl & 0x20) ? 16 : 8, m_oam2, &m_oam2Spr0, &overflow);
   if (overflow)
     m_status |= 0x20;
+}
 
-  // sprite 0 hit: needs "sprite 0" (the first object evaluated) on this line, and both the
-  // background and the sprites on
-  if (!spr0 || (m_mask & 0x18) != 0x18)
+
+// A pending sprite 0 hit whose dot has passed: it counts if both the background and the sprites
+// were on then (the mask as it is now: Ppu calls this before changing it). If not, a later line
+// may still hit.
+void Ppu::resolveHit()
+{
+  if (spr0HitCycle <= m_nes->cpu.cycles && !(m_status & 0x40)) {
+    if ((m_mask & 0x18) == 0x18)
+      m_status |= 0x40;
+    else
+      spr0HitCycle = INT32_MAX;
+  }
+}
+
+
+void Ppu::fetchSprites(int y)
+{
+  if (!(m_mask & 0x18)) {
+    m_sprCount = 0;
+    return;
+  }
+  for (int i = 0; i < m_oam2Count; ++i) {
+    uint8_t const * o = m_oam2[i];
+    uint16_t pa = spritePatternAddr(m_ctrl, o[1], o[2], y - o[0]);
+    uint8_t const * chr = sprChrMap[pa >> 10] + (pa & 0x3ff);
+    uint8_t lo = chr[0], hi = chr[8];
+    if (o[2] & 0x40) {
+      lo = s_reverse[lo];
+      hi = s_reverse[hi];
+    }
+    m_spr[i][0] = lo;
+    m_spr[i][1] = hi;
+    m_spr[i][2] = o[2];
+    m_spr[i][3] = o[3];
+  }
+  m_sprCount = m_oam2Count;
+  m_sprSpr0 = m_oam2Spr0;
+}
+
+
+NES_HOT int Ppu::spriteZeroHit(int y)
+{
+  // needs "sprite 0" (the first object evaluated) on this line, and rendering on, so the shift
+  // registers fill; whether both the background and the sprites are on is up to the hit's dot
+  // (resolveHit)
+  resolveHit();
+  if (!m_sprCount || !m_sprSpr0 || !(m_mask & 0x18))
     return -1;
-  unsigned row = (unsigned)(y - 1 - found[0][0]);
-  uint8_t tile = found[0][1], attr = found[0][2];
-  int sx = found[0][3];
-  uint16_t pa = spritePatternAddr(m_ctrl, tile, attr, row);
-  uint8_t const * chr = sprChrMap[pa >> 10] + (pa & 0x3ff);
-  uint8_t bits = chr[0] | chr[8];
-  if (attr & 0x40)
-    bits = s_reverse[bits];
+  uint8_t bits = m_spr[0][0] | m_spr[0][1];
   if (!bits)
     return -1;
+  int sx = m_spr[0][3];
   // either clip bit hides the leftmost 8 pixels from the hit test; x = 255 never hits
   int minX = ((m_mask & 0x06) == 0x06) ? 0 : 8;
   for (int px = 0; px < 8; ++px) {
@@ -499,25 +559,13 @@ void Ppu::drawLine(LineState const & st, int y, uint8_t * out, uint8_t const * c
   // --- sprites, drawn over the background in OAM order. The first opaque sprite pixel at an x
   // claims it, even when it is behind the background and so not drawn: that hides any later
   // sprite there (the "mushroom coming out of the block" effect).
-  int height = (st.ctrl & 0x20) ? 16 : 8;
   int minX = (st.mask & 0x04) ? 0 : 8;
   int xorX = vgaOrder ? 2 : 0;
   uint32_t taken[8] = { 0 };
-  uint8_t found[8][4];
-  bool spr0, overflow;
-  int count = evaluateSprites(oam, st.evalStart, y, height, found, &spr0, &overflow);
-  for (int k = 0; k < count; ++k) {
-    uint8_t const * s = found[k];
-    int row = y - 1 - s[0];
-    uint8_t attr = s[2];
-    int sx = s[3];
-    uint16_t pa = spritePatternAddr(st.ctrl, s[1], attr, row);
-    uint8_t const * chr = st.sprChrMap[pa >> 10] + (pa & 0x3ff);
-    uint8_t lo = chr[0], hi = chr[8];
-    if (attr & 0x40) {
-      lo = s_reverse[lo];
-      hi = s_reverse[hi];
-    }
+  for (int k = 0; k < st.sprCount; ++k) {
+    uint8_t lo = st.spr[k][0], hi = st.spr[k][1];
+    uint8_t attr = st.spr[k][2];
+    int sx = st.spr[k][3];
     if (!(lo | hi))
       continue;
     uint8_t const * spal = rp + 0x10 + ((attr & 3) << 2);
@@ -546,6 +594,7 @@ void Ppu::state(StateIO & io)
   io.pod(spr0HitCycle); io.pod(vblRaceCycle); io.pod(nmiEdgeCycle); io.pod(vblSetUnits); io.pod(nmiClearCycle);
   io.pod(m_ctrl); io.pod(m_mask); io.pod(m_status); io.pod(m_oamAddr);
   io.pod(m_v); io.pod(m_t); io.pod(m_x); io.pod(m_evalStart); io.pod(m_w);
+  io.pod(m_oam2); io.pod(m_oam2Count); io.pod(m_evalOn); io.pod(m_oam2Spr0); io.pod(m_spr); io.pod(m_sprCount); io.pod(m_sprSpr0);
   io.pod(m_readBuffer); io.pod(m_openBus); io.pod(m_openBusFrame);
   io.pod(m_vblSuppressed); io.pod(m_vblCycle);
 }

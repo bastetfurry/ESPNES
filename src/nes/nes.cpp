@@ -177,7 +177,7 @@ void Nes::powerOn()
 // The state's header: a format version (raise it whenever a state() function changes), then
 // what the console must look like for the state to fit.
 static constexpr uint32_t STATE_MAGIC = 0x53534e45;     // "ENSS"
-static constexpr uint16_t STATE_VERSION = 1;
+static constexpr uint16_t STATE_VERSION = 2;
 
 bool Nes::state(StateIO & io)
 {
@@ -762,7 +762,7 @@ NES_HOT void Nes::runFrame(bool draw)
           m_lineHook(m_lineHookArg, y, m_lines[y]);
       }
     }
-    int hitX = ppu.evaluateLine(y);
+    int hitX = ppu.spriteZeroHit(y);
     if (NES_UNLIKELY(m_mapper->wantsLineStart) && ppu.renderingEnabled()) {
       runCpu(cycleAt(y, 4));
       m_mapper->lineStart(y);
@@ -773,9 +773,14 @@ NES_HOT void Nes::runFrame(bool draw)
     runCpu(cycleAt(y, 65));
     ppu.latchEvalStart();
     runCpu(cycleAt(y, 256));
+    ppu.evaluateSprites(y);
     ppu.endOfLine();
     if (ppu.renderingEnabled())
       m_mapper->hblank();
+    // sprite 0's pattern is fetched in dots 261-264: a sprite size changed at the start of
+    // hblank still counts
+    runCpu(cycleAt(y, 262));
+    ppu.fetchSprites(y);
     apu.run(cpu.cycles);
   }
 
@@ -831,9 +836,15 @@ NES_HOT void Nes::runFrame(bool draw)
   ppu.latchEvalStart();
   runCpu(cycleAt(pre, 256));
   ppu.endOfLine();
-  ppu.copyVertical();
   if (ppu.renderingEnabled())
     m_mapper->hblank();
+  // no evaluation here, but the fetches: line 0 gets what the last evaluation left in secondary
+  // OAM, fetched with this line's number
+  runCpu(cycleAt(pre, 262));
+  ppu.fetchSprites(pre);
+  // dots 280-304 copy the vertical position from t, while rendering is on: here at the last one
+  runCpu(cycleAt(pre, 304));
+  ppu.copyVertical();
   runCpu(cycleAt(lines, 0));
   apu.run(cpu.cycles);
   ppu.nmiClearCycle = INT32_MAX;

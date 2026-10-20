@@ -36,7 +36,8 @@ public:
   struct LineState {
     uint16_t  v;
     uint8_t   x, ctrl, mask;
-    uint8_t   evalStart;            // OAM address sprite evaluation starts at
+    uint8_t   sprCount;             // sprites fetched for the line
+    uint8_t   spr[8][4];            // their pattern bytes (flipped), attribute and x
     uint8_t   palette[32];
     uint8_t * chrMap[8];
     uint8_t * sprChrMap[8];
@@ -45,17 +46,24 @@ public:
 
   void captureLine(LineState & s) const;
 
-  // CPU side of visible line y, at its start: sets the sprite overflow flag and returns the x
-  // position of the sprite 0 hit on this line, or -1.
-  int  evaluateLine(int y);
+  // CPU side of visible line y, at its start: the x position of the sprite 0 hit on this line,
+  // or -1.
+  int  spriteZeroHit(int y);
 
   // Draws visible line y from a snapshot into 'out' (256 pixels, 32 bit aligned), each NES colour
   // (0-63) translated through colorMap. vgaOrder stores the pixels in FabGL's raw scanline byte
   // order. Touches no PPU state, so it may run on another core.
   void drawLine(LineState const & s, int y, uint8_t * out, uint8_t const * colorMap, bool vgaOrder) const;
 
-  // dot 65 of a line: sprite evaluation for the next line starts at the current OAM address
+  // dot 65 of a line: secondary OAM has been cleared (with rendering on), and sprite evaluation
+  // for the next line starts at the current OAM address
   void latchEvalStart();
+  // dots 65-256 of visible line y: sprite evaluation for the next line into secondary OAM (when
+  // rendering is on; otherwise secondary OAM keeps what it had)
+  void evaluateSprites(int y);
+  // dots 257-320 of line y (pre-render line: linesPerFrame - 1): the next line's sprites fetched
+  // from secondary OAM, with the sprite size and pattern table set then
+  void fetchSprites(int y);
 
   // dot 256-257 of a rendered line: fine Y increment and horizontal copy from t, OAMADDR to 0
   void endOfLine();
@@ -89,6 +97,7 @@ public:
 private:
 
   bool     bgOpaqueAt(int x) const;
+  void     resolveHit();
   void     incrementY();
   void     incrementAfter2007();
   uint8_t  vramRead(uint16_t addr);
@@ -100,6 +109,13 @@ private:
   uint16_t m_v, m_t;                // loopy registers
   uint8_t  m_x;                     // fine X
   uint8_t  m_evalStart;             // OAMADDR at dot 65 of the line before
+  uint8_t  m_oam2[8][4];            // secondary OAM: the objects found by the last evaluation
+  uint8_t  m_oam2Count;
+  bool     m_oam2Spr0;              // ... the first of them is the first object evaluated
+  bool     m_evalOn;                // rendering was on at dot 65: evaluation runs
+  uint8_t  m_spr[8][4];             // the sprites fetched for the next line (see LineState)
+  uint8_t  m_sprCount;
+  bool     m_sprSpr0;
   bool     m_w;                     // write toggle
   uint8_t  m_readBuffer;
   uint8_t  m_openBus;

@@ -609,10 +609,10 @@ void Nes::drawQueuedLines()
 
 
 // Runs the CPU to 'until', halting it for the DMC's sample fetches (DMA) on the way. The
-// instruction the DMA falls into runs "armed": if it reads I/O or open bus on or after the DMA's
-// cycle, the DMA lands on that read (see dmaInRead). Otherwise the DMA happens after it. That is a
-// best effort: the halt on RAM/ROM reads is not placed exactly, which only matters for timing.
-// It costs nothing while the DMC is idle.
+// instruction the DMA falls into runs "armed": if it reads I/O or open bus in the DMA's very
+// cycle, the DMA lands on that read (see dmaInRead). Otherwise the DMA happens after it, which
+// only moves the halt of a RAM/ROM read, without side effects. It costs nothing while the DMC is
+// idle.
 NES_HOT void Nes::runCpu(int32_t until)
 {
   // NSF: waiting for the next PLAY in the idle loop changes nothing, so the time is skipped

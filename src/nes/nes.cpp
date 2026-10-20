@@ -666,7 +666,10 @@ void Nes::dmaInRead(uint16_t addr)
   int32_t at = m_dmaArmed;
   m_dmaArmed = INT32_MAX;
   int stall = isGetCycle(at) ? 3 : 4;
-  for (int i = 1; i < stall; ++i)
+  // the pads clock on /OE going active, which stays so through back-to-back reads: the halt and
+  // alignment reads clock them once, so a DMA deletes one bit, not two or three
+  int reads = addr == 0x4016 || addr == 0x4017 ? 2 : stall;
+  for (int i = 1; i < reads; ++i)
     readIO(addr);
   apu.run(at);                               // the fetch, its byte stays on the data bus
   apu.takeDmaStall();

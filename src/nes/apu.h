@@ -163,7 +163,7 @@ private:
 
   void advance(int32_t n);       // all channels, no frame counter events inside
   void advanceDmc(int32_t n);
-  void dmcFetch();
+  void dmcFetch(int32_t at);                 // the DMA in CPU cycle 'at'
   void quarterFrame();
   void halfFrame();
   void frameCounterStep();
@@ -191,6 +191,7 @@ private:
 
   // frame counter
   bool     m_fiveStep, m_irqInhibit, m_frameIrq;
+  int32_t  m_frameIrqUntil = INT32_MIN;   // the flag is set again in each cycle up to this one
   int32_t  m_seqCycle;           // cycles since the sequence started
   int      m_seqStep;
   int32_t const * m_seqPositions;

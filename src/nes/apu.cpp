@@ -28,10 +28,11 @@ static const uint16_t s_noisePeriodPAL[16]  = { 4, 8, 14, 30, 60, 88, 118, 148, 
 static const uint16_t s_dmcPeriodNTSC[16]   = { 428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54 };
 static const uint16_t s_dmcPeriodPAL[16]    = { 398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50 };
 
-// frame counter: CPU cycles of each step since the sequence start, then the sequence length
-static const int32_t s_seq4NTSC[5] = { 7457, 14913, 22371, 29829, 29830 };
+// frame counter: CPU cycles of each step since the sequence start, then the sequence length;
+// the 4-step sequence sets the IRQ flag a cycle before its last step too (and a cycle after)
+static const int32_t s_seq4NTSC[6] = { 7457, 14913, 22371, 29828, 29829, 29830 };
 static const int32_t s_seq5NTSC[6] = { 7457, 14913, 22371, 29829, 37281, 37282 };
-static const int32_t s_seq4PAL[5]  = { 8313, 16627, 24939, 33253, 33254 };
+static const int32_t s_seq4PAL[6]  = { 8313, 16627, 24939, 33252, 33253, 33254 };
 static const int32_t s_seq5PAL[6]  = { 8313, 16627, 24939, 33253, 41565, 41566 };
 
 
@@ -141,13 +142,13 @@ NES_HOT void Apu::Noise::advance(int32_t n)
 }
 
 
-void Apu::dmcFetch()
+void Apu::dmcFetch(int32_t at)
 {
   Dmc & d = m_dmc;
   if (d.bufferFull || !d.remaining)
     return;
   // the DMA halts the CPU for 4 cycles, 3 if it starts on a "get" cycle; Nes adds them
-  m_dmaStall += m_nes->isGetCycle(m_cycle) ? 3 : 4;
+  m_dmaStall += m_nes->isGetCycle(at) ? 3 : 4;
   d.buffer = m_nes->bus = m_nes->read(d.addr);     // the fetched byte is left on the data bus
   d.bufferFull = true;
   d.addr = d.addr == 0xffff ? 0x8000 : d.addr + 1;
@@ -166,9 +167,11 @@ void Apu::dmcFetch()
 NES_HOT void Apu::advanceDmc(int32_t n)
 {
   Dmc & d = m_dmc;
+  int32_t at = m_cycle;                        // the cycle d.timer counts from
   while (n >= d.timer) {
     d.acc += d.level * d.timer;
     n -= d.timer;
+    at += d.timer;
     d.timer = d.period;
     if (!d.silent) {
       if (d.shift & 1) {
@@ -185,7 +188,7 @@ NES_HOT void Apu::advanceDmc(int32_t n)
         d.silent = false;
         d.shift = d.buffer;
         d.bufferFull = false;
-        dmcFetch();
+        dmcFetch(at);
       } else {
         d.silent = true;
       }
@@ -213,6 +216,9 @@ void Apu::reset(Region region)
   m_noise.lfsr  = 1;
   m_noise.period = m_noise.timer = region == Region::PAL ? s_noisePeriodPAL[0] : s_noisePeriodNTSC[0];
   m_dmc.period  = m_dmc.timer = region == Region::PAL ? s_dmcPeriodPAL[0] : s_dmcPeriodNTSC[0];
+  // the timer runs on APU cycles and runs out on "put" cycles (odd, from power on; the periods
+  // are even), so the DMA of a buffer reload halts the CPU on a put cycle and takes 4 cycles
+  ++m_dmc.timer;
   m_dmc.bitsLeft = 8;
   m_dmc.silent  = true;
   m_dmc.startAddr = 0xc000;
@@ -224,6 +230,7 @@ void Apu::reset(Region region)
   m_loadPending = false;
   m_accCycles = 0;
   m_fiveStep = m_irqInhibit = m_frameIrq = false;
+  m_frameIrqUntil = INT32_MIN;
   m_seqCycle = 0;
   m_seqStep = 0;
   m_seqPositions = region == Region::PAL ? s_seq4PAL : s_seq4NTSC;
@@ -306,16 +313,20 @@ void Apu::halfFrame()
 void Apu::frameCounterStep()
 {
   if (!m_fiveStep) {
-    quarterFrame();
-    if (m_seqStep & 1)
+    if (m_seqStep != 3)
+      quarterFrame();
+    if (m_seqStep == 1 || m_seqStep == 4)
       halfFrame();
+    // the flag is set in the last three cycles of the sequence: a read in the first two
+    // clears it for a cycle only
     if (m_seqStep == 3 && !m_irqInhibit) {
       m_frameIrq = true;
+      m_frameIrqUntil = m_cycle + 2;
       m_nes->cpu.setIrq(Cpu::IRQ_FRAME);
     }
-    if (++m_seqStep == 4) {
+    if (++m_seqStep == 5) {
       m_seqStep = 0;
-      m_seqCycle -= m_seqPositions[4];
+      m_seqCycle -= m_seqPositions[5];
     }
   } else {
     if (m_seqStep != 3)
@@ -462,7 +473,7 @@ NES_HOT void Apu::run(int32_t until)
   if (NES_UNLIKELY(m_loadPending) && !m_frozen && until >= m_loadAt) {
     m_loadPending = false;
     run(m_loadAt);
-    dmcFetch();
+    dmcFetch(m_loadAt);
   }
   if (NES_UNLIKELY(m_frozen)) {
     // skip the time: the sample clock and the frame counter (relative to m_cycle) move with it
@@ -508,6 +519,8 @@ int32_t Apu::nextDmaCycle() const
 
 void Apu::rebase(int32_t cycles)
 {
+  if (m_frameIrqUntil != INT32_MIN)
+    m_frameIrqUntil -= cycles;
   if (m_loadPending)
     m_loadAt -= cycles;
   m_parity ^= cycles & 1;       // keeps (m_cycle ^ m_parity) & 1 the absolute cycle parity
@@ -521,8 +534,10 @@ uint8_t Apu::readStatus()
   uint8_t r = (m_pulse[0].length ? 0x01 : 0) | (m_pulse[1].length ? 0x02 : 0) |
               (m_tri.length ? 0x04 : 0) | (m_noise.length ? 0x08 : 0) |
               (m_dmc.remaining ? 0x10 : 0) | (m_frameIrq ? 0x40 : 0) | (m_dmc.irqFlag ? 0x80 : 0);
-  m_frameIrq = false;
-  m_nes->cpu.clearIrq(Cpu::IRQ_FRAME);
+  if (m_cycle >= m_frameIrqUntil) {
+    m_frameIrq = false;
+    m_nes->cpu.clearIrq(Cpu::IRQ_FRAME);
+  }
   return r;
 }
 
@@ -703,6 +718,7 @@ void Apu::state(StateIO & io)
   io.pod(m_region); io.pod(m_dmaStall); io.pod(m_loadPending); io.pod(m_loadAt);
   io.pod(m_cycle); io.pod(m_parity); io.pod(m_accCycles);
   io.pod(m_fiveStep); io.pod(m_irqInhibit); io.pod(m_frameIrq); io.pod(m_seqCycle); io.pod(m_seqStep);
+  m_frameIrqUntil = INT32_MIN;                  // a two cycle window, not worth a format change
   io.pod(m_nextSample); io.pod(m_hpPrevIn); io.pod(m_hpPrevOut);
   if (io.loading()) {
     m_seqPositions = m_fiveStep ? (m_region == Region::PAL ? s_seq5PAL : s_seq5NTSC)

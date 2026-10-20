@@ -386,7 +386,7 @@ void Nes::setMirroring(Mirroring mirroring)
 
 NES_HOT uint8_t Nes::readIO(uint16_t addr)
 {
-  if (NES_UNLIKELY(cpu.cycles - 1 >= m_dmaArmed))
+  if (NES_UNLIKELY(cpu.cycles - 1 == m_dmaArmed))
     dmaInRead(addr);
 
   if (addr < 0x4000) {
@@ -560,6 +560,11 @@ NES_HOT void Nes::writeIO(uint16_t addr, uint8_t value)
   }
 
   if (addr == 0x4016) {
+    // the outputs latch the register as a "get" cycle turns into a "put" cycle: a read-modify-
+    // write's first write in a put cycle is replaced by the second in the get cycle right after
+    // before they see it
+    if (dummyWrite && !isGetCycle(cpu.cycles - 2))
+      return;
     if (m_famiKeyboard) {
       if (value & 1)
         m_famiRow = 0;
@@ -640,8 +645,11 @@ NES_HOT void Nes::runCpuTo(int32_t until)
       return;
     }
     cpu.run(dma);
-    // the instruction the DMA falls into, unless that could run past 'until' (an event)
-    if (cpu.cycles < dma && dma + 8 <= until) {
+    // the instruction the DMA falls into; if that could run past 'until' (an event), it runs
+    // after the event, in the next call
+    if (cpu.cycles < dma) {
+      if (dma + 8 > until)
+        return;
       m_dmaArmed = dma;
       cpu.step();
       m_dmaArmed = INT32_MAX;
@@ -657,10 +665,9 @@ NES_HOT void Nes::runCpuTo(int32_t until)
 // A DMA landing on a read of 'addr': the CPU halts on that read, and the halt and alignment
 // cycles read the address again (side effects on $2002, $2007, $4015, $4016), then the DMA fetches
 // the sample byte, which ends up on the data bus. The actual read comes after that.
-// Best effort: a DMA due anywhere in the instruction lands on its I/O read. Strictly it would only
-// land on it when due in that very cycle (an earlier one halts an opcode or operand fetch), but
-// that needs the halt placed exactly in every instruction, including the delay past write cycles,
-// which the instruction-granular CPU does not model; tried, it scored worse (39 against 42).
+// It lands there only when due in that very cycle; one due earlier halts an opcode or operand
+// fetch, which has no side effects, so it is placed after the instruction instead. The read is
+// taken to be the instruction's last cycle, as the instruction-granular CPU does everywhere.
 void Nes::dmaInRead(uint16_t addr)
 {
   int32_t at = m_dmaArmed;
@@ -669,11 +676,13 @@ void Nes::dmaInRead(uint16_t addr)
   // the pads clock on /OE going active, which stays so through back-to-back reads: the halt and
   // alignment reads clock them once, so a DMA deletes one bit, not two or three
   int reads = addr == 0x4016 || addr == 0x4017 ? 2 : stall;
-  for (int i = 1; i < reads; ++i)
+  for (int i = 1; i < reads; ++i) {          // each in its own cycle (the APU sees them so)
     readIO(addr);
+    ++cpu.cycles;
+  }
   apu.run(at);                               // the fetch, its byte stays on the data bus
   apu.takeDmaStall();
-  cpu.cycles += stall;
+  cpu.cycles += stall - (reads - 1);
 }
 
 

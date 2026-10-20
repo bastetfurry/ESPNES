@@ -204,7 +204,10 @@ public:
   uint8_t *       prgRam;         // 8 KB at $6000, battery backed on some carts
   uint8_t *       chrRam() const { return m_chrRam; }   // 8 KB CHR RAM, or nullptr (CHR ROM)
   uint8_t         bus = 0;        // the last value on the CPU data bus (open bus)
+  bool            dummyWrite = false;   // a read-modify-write's first write (cycle before the last)
   static constexpr int PRG_RAM_SIZE = 0x2000;
+  // a DMC DMA halts the CPU on its read at 'cycle' (while the instruction it falls into runs)
+  bool dmaHaltsAt(int32_t cycle) const { return m_dmaArmed == cycle; }
 
 private:
 

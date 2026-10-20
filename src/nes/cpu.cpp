@@ -91,7 +91,9 @@ static void __attribute__((noinline, cold)) ioDummyRead(Nes & nes, uint16_t addr
 
 static void __attribute__((noinline, cold)) ioDummyWrite(Nes & nes, uint16_t addr, uint8_t value)
 {
+  nes.dummyWrite = true;
   nes.write(addr, value);
+  nes.dummyWrite = false;
 }
 
 #define AM_IMM   uint16_t a = PC++;
@@ -369,12 +371,18 @@ void Cpu::runCold(uint8_t op, int32_t until)
                    C = ax >= m; X = ax - m; NZ(X); break; }
       case 0x8b: { AM_IMM A = X & RD(a); NZ(A); break; }                          // XAA (unstable)
 
-      // unofficial stores of "register AND (high address byte + 1)", unstable on hardware
-      case 0x9c: { AM_ABSX WR(a, Y & (((a - X) >> 8) + 1)); break; }               // SHY
-      case 0x9e: { AM_ABSY WR(a, X & (((a - Y) >> 8) + 1)); break; }               // SHX
-      case 0x9f: { AM_ABSY WR(a, A & X & (((a - Y) >> 8) + 1)); break; }           // AHX
-      case 0x93: { AM_IZY  WR(a, A & X & (((a - Y) >> 8) + 1)); break; }           // AHX
-      case 0x9b: { AM_ABSY S = A & X; WR(a, S & (((a - Y) >> 8) + 1)); break; }    // TAS
+      // unofficial stores of "register AND (high address byte + 1)", unstable on hardware; when the
+      // indexing crosses a page, the value also replaces the address's high byte. A DMA halting the
+      // dummy read before the write leaves the high byte out.
+#define OP_SH(i, r) { uint16_t b_ = a - (i); uint8_t v = (r); \
+                      if (!nes.dmaHaltsAt(cycles - 2)) v &= (b_ >> 8) + 1; \
+                      if ((a ^ b_) & 0xff00) a = (a & 0xff) | v << 8; \
+                      WR(a, v); }
+      case 0x9c: { AM_ABSX OP_SH(X, Y) break; }                                   // SHY
+      case 0x9e: { AM_ABSY OP_SH(Y, X) break; }                                   // SHX
+      case 0x9f: { AM_ABSY OP_SH(Y, A & X) break; }                               // AHX
+      case 0x93: { AM_IZY  OP_SH(Y, A & X) break; }                               // AHX
+      case 0x9b: { AM_ABSY S = A & X; OP_SH(Y, S) break; }                        // TAS
       case 0xbb: { AM_ABSYP A = X = S = RD(a) & S; NZ(A); break; }                 // LAS
 
       // KIL: the CPU locks up until reset

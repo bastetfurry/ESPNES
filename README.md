@@ -14,6 +14,19 @@ The games are built into the firmware.
 
 Source and more information: [github.com/bastetfurry/ESPNES](https://github.com/bastetfurry/ESPNES)
 
+<table>
+<tr>
+<td align="center"><img src="screenshots/mainmenu.png" width="256" alt="Main menu"><br>Main menu</td>
+<td align="center"><img src="screenshots/sns.png" width="256" alt="Swords and Serpents"><br>Swords and Serpents</td>
+<td align="center"><img src="screenshots/sysrqmenu.png" width="256" alt="System menu"><br>System menu over the game</td>
+</tr>
+<tr>
+<td align="center"><img src="screenshots/cheats.png" width="256" alt="Cheat codes"><br>Cheat codes</td>
+<td align="center"><img src="screenshots/cheatsentry.png" width="256" alt="Entering a cheat code"><br>Entering a code</td>
+<td align="center"><img src="screenshots/files.png" width="256" alt="File manager"><br>File manager</td>
+</tr>
+</table>
+
 ## Why?
 
 I had an old ESP32 LILYGO VGA board in my drawer that was collecting moths and i wanted to check out if
@@ -507,6 +520,8 @@ show how close a game gets.
 Super Mario Bros. runs at full speed with no frame skipping, using ~8.8 ms of the 16.6 ms frame.
 
 ### Accuracy
+
+<img src="screenshots/accuracycoin.png" width="256" alt="AccuracyCoin results on the board" align="right">
 
 On AccuracyCoin, ESPNES passes 103 or 104 of 146 (2026-10-14), nothing skipped: which one depends
 on the frame Start is pressed in, since that sets the phase of the free running DMC against the
